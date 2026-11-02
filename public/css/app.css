@@ -456,6 +456,7 @@ button { cursor: pointer; }
 .ck.yes { color: var(--ok); border-color: rgba(74, 222, 128, 0.3); }
 .ck.no { color: var(--alert); border-color: rgba(251, 146, 60, 0.3); }
 .ck.na { color: var(--faint); }
+.ck-key { flex-basis: 100%; margin: 4px 0 0; font: 400 10.5px/1.4 var(--mono); color: var(--faint); }
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 
 /* key/value rows (radar, storm watch) */

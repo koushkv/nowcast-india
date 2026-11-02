@@ -198,7 +198,7 @@ export function scenarioFetch(sc, extra = {}) {
  * rainFn(modelId, tSec, pointIndex) -> mm per hour (accumulation over the hour ending at tSec).
  * pointIndex: -1 = pin, 0..7 = ring.
  */
-export function openMeteoHandlers({ nowSec, rainFn, tz = 'Asia/Kolkata', tzAbbr = 'GMT+5:30', offset = 19800, temp = 26 }) {
+export function openMeteoHandlers({ nowSec, rainFn, tz = 'Asia/Kolkata', tzAbbr = 'GMT+5:30', offset = 19800, temp = 26, cape = 1200 }) {
   const hourTimes = (past, fut) => {
     // like Open-Meteo with timezone=auto: hours follow local clock hours (xx:30 UTC in India)
     const h0 = Math.floor((nowSec + offset) / 3600) * 3600 - offset;
@@ -244,7 +244,7 @@ export function openMeteoHandlers({ nowSec, rainFn, tz = 'Asia/Kolkata', tzAbbr 
             case 'wind_direction_10m': f = () => 250; break;
             case 'wind_gusts_10m': f = () => 25; break;
             case 'weather_code': f = (t) => (rainFn(m, t, -1) > 4 ? 95 : rainFn(m, t, -1) > 0.2 ? 61 : 2); break;
-            case 'cape': f = () => 1200; break;
+            case 'cape': f = () => cape; break;
             case 'wind_speed_700hPa': f = () => 36; break;
             case 'wind_direction_700hPa': f = () => 250; break;
             default: f = () => null;

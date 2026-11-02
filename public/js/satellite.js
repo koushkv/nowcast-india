@@ -34,21 +34,32 @@ async function image(f, base, t, b) {
   return k;
 }
 
-/** Coldest value in the 3x3 neighbourhood: follows a growing tower even if it drifts a pixel. */
-function localMin(a) {
+/**
+ * Coldest value within `r` pixels. Comparing the coldest top now (r = 1) with the coldest top within
+ * a wider window earlier (r = 3 for -15 min, r = 5 for -30 min, ~12 and ~19 km) means a cold cloud
+ * sheet that merely drifted over a spot does not count as cooling: only tops that got colder do.
+ * High cloud moves 10-20 km in 15 minutes; a growing storm top cools by 4-15 °C in place.
+ */
+function localMin(a, r) {
+  // separable min filter: rows, then columns
+  const tmp = new Float32Array(a.length).fill(NaN);
   const out = new Float32Array(a.length).fill(NaN);
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       let m = Infinity;
-      for (let dy = -1; dy <= 1; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= SIZE) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          if (xx < 0 || xx >= SIZE) continue;
-          const v = a[yy * SIZE + xx];
-          if (v < m) m = v;
-        }
+      for (let xx = Math.max(0, x - r); xx <= Math.min(SIZE - 1, x + r); xx++) {
+        const v = a[y * SIZE + xx];
+        if (v < m) m = v;
+      }
+      if (m < Infinity) tmp[y * SIZE + x] = m;
+    }
+  }
+  for (let y = 0; y < SIZE; y++) {
+    for (let x = 0; x < SIZE; x++) {
+      let m = Infinity;
+      for (let yy = Math.max(0, y - r); yy <= Math.min(SIZE - 1, y + r); yy++) {
+        const v = tmp[yy * SIZE + x];
+        if (v < m) m = v;
       }
       if (m < Infinity) out[y * SIZE + x] = m;
     }
@@ -59,7 +70,7 @@ function localMin(a) {
 /** Pure analysis of three images (now, -15, -30 min) of the box b around (lat, lon). */
 export function analyse(k0, k15, k30, b, lat, lon) {
   const [lat0, lon0, lat1, lon1] = b;
-  const m0 = localMin(k0), m15 = localMin(k15), m30 = localMin(k30);
+  const m0 = localMin(k0, 1), m15 = localMin(k15, 3), m30 = localMin(k30, 5);
   const coslat = Math.cos((lat * Math.PI) / 180);
   let n = 0, cloudy = 0, cold = 0, dev = 0, rapid = 0, warmSum = 0, warmN = 0;
   let coldest = Infinity, overhead = NaN, bestD = Infinity;

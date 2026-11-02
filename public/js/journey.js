@@ -116,7 +116,7 @@ function scopeView(j, f, sat) {
   </svg>`;
 }
 
-const CHECK_LABEL = { radar: 'Radar movement', satellite: 'Satellite', models: 'Models', ai: 'AI' };
+const CHECK_LABEL = { radar: 'Radar track', satellite: 'Satellite', models: 'Models', ai: 'AI' };
 
 /** Full card body: diagram, the headline numbers under it, and which sources agree. */
 export function journeyHTML(j, f, nowSec) {
@@ -149,17 +149,24 @@ export function journeyHTML(j, f, nowSec) {
       v2 = `${Math.round((j.chance || 0) * 100)}%`;
     }
   }
-  const checks = Object.entries(CHECK_LABEL).map(([k, name]) => {
-    const v = j.checks ? j.checks[k] : null;
-    const cls = v === true ? 'yes' : v === false ? 'no' : 'na';
-    const mark = v === true ? '✓' : v === false ? '✗' : '–';
-    const title = v === true ? 'supports this forecast' : v === false ? 'does not support this forecast' : 'not available';
-    return `<span class="ck ${cls}" title="${name}: ${title}"><b aria-hidden="true">${mark}</b>${name}<span class="sr"> ${title}</span></span>`;
-  }).join('');
+  // Which sources back the expected rain. Shown only when rain is expected: for a dry forecast a row
+  // of ✓/✗ would read as "something is wrong" rather than "nothing is coming".
+  let checksHTML = '';
+  if (j.state === 'approaching' || j.state === 'overhead' || j.state === 'developing') {
+    const checks = Object.entries(CHECK_LABEL).map(([k, label]) => {
+      const v = j.checks ? j.checks[k] : null;
+      const name = k === 'radar' && v == null && j.state === 'developing' ? 'Radar: nothing to track yet' : label;
+      const cls = v === true ? 'yes' : v === false ? 'no' : 'na';
+      const mark = v === true ? '✓' : v === false ? '✗' : '–';
+      const title = v === true ? 'supports this forecast' : v === false ? 'disagrees with this forecast' : 'nothing to check yet';
+      return `<span class="ck ${cls}" title="${name}: ${title}"><b aria-hidden="true">${mark}</b>${esc(name)}<span class="sr"> ${title}</span></span>`;
+    }).join('');
+    checksHTML = `<div class="checks">${checks}<p class="ck-key">✓ supports the rain forecast · ✗ disagrees · – nothing to check yet</p></div>`;
+  }
   return `${svg}
     <dl class="readout journey-nums">
       <div><dt>${esc(k1)}</dt><dd>${esc(v1)}<span class="s">${esc(s1)}</span></dd></div>
       ${k2 ? `<div><dt>${esc(k2)}</dt><dd>${esc(v2)}</dd></div>` : '<div></div>'}
     </dl>
-    <div class="checks">${checks}</div>`;
+    ${checksHTML}`;
 }

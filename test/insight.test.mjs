@@ -57,12 +57,18 @@ assert.equal(clear.trend, 'clear');
 const anvil = (minAgo) => () => 215 + (30 - minAgo) * 0.6; // big cold anvil warming ~9 K / 15 min
 assert.equal(analyse(fieldK(anvil(0)), fieldK(anvil(15)), fieldK(anvil(30)), b, LAT, LON).trend, 'decaying');
 console.log('  ok  satellite: growing tower 20 km W = rapid; clear sky = clear; warming anvil = decaying');
+// a cold high-cloud sheet drifting west at ~32 km/h (8 km per 15 min) is not a growing storm
+const sheet = (minAgo) => (lat, lon) => (lon > LON - 0.2 + ((30 - minAgo) / 15) * -0.075 ? 225 : 296);
+const drift = analyse(fieldK(sheet(0)), fieldK(sheet(15)), fieldK(sheet(30)), b, LAT, LON);
+console.log('satellite, drifting cirrus sheet:', drift.trend, drift.coolingK15);
+assert.ok(drift.trend !== 'rapid' && drift.trend !== 'developing', 'drifting cold cloud is not counted as growth');
+console.log('  ok  satellite: a drifting high-cloud sheet is not mistaken for a growing storm');
 
 // ---- 3. whole forecasts ----
-async function forecast(scOpts, rainFn, tempK) {
+async function forecast(scOpts, rainFn, tempK, cape = 1200) {
   clearTileCache();
   const sc = makeScenario({ nowSec, ...scOpts });
-  const extra = { ...openMeteoHandlers({ nowSec, rainFn }) };
+  const extra = { ...openMeteoHandlers({ nowSec, rainFn, cape }) };
   if (tempK) Object.assign(extra, satHandlers({ base: BASE, nowSec, tempK }));
   const r = await runForecast({ lat: LAT, lon: LON, nowSec, fetchImpl: scenarioFetch(sc, extra), satBase: BASE });
   return r;
@@ -108,8 +114,22 @@ assert.equal(ib.sat.trend, 'rapid');
 assert.equal(ib.mode.mode, 'developing');
 assert.equal(ib.journey.state, 'developing');
 assert.equal(ib.journey.checks.satellite, true);
+assert.equal(ib.journey.checks.radar, null, 'radar has nothing to track yet: neutral, not a disagreement');
+assert.equal(ib.satVerdict, 'storm');
 assert.ok(ib.boost && p30 >= 0.3, 'satellite growth near a dry radar raises the near-term chance');
 console.log('  ok  storms developing: satellite growth + unstable models -> "convective development", warning raised');
+
+// B2. the same satellite growth, but stable air and dry models (e.g. a cyclone's cirrus at night):
+// reported as high cloud, no storm mode, no raised chance, and no source checks on a dry forecast
+const B2 = await forecast({ cells: [], band: false }, () => 0, growK, 50);
+const ib2 = B2.insight;
+console.log('B2 mode:', ib2.mode, '| verdict:', ib2.satVerdict, '| boost:', ib2.boost, '| journey:', ib2.journey.state);
+assert.equal(ib2.sat.trend, 'rapid');
+assert.equal(ib2.satVerdict, 'high-cloud');
+assert.equal(ib2.mode.mode, 'settled');
+assert.equal(ib2.boost, null);
+assert.ok(['clear', 'nearby'].includes(ib2.journey.state));
+console.log('  ok  cooling tops in stable, dry air: "high cloud", settled, no warning');
 
 // C. settled: no rain anywhere, models dry, clear satellite
 const C = await forecast({ cells: [], band: false }, () => 0, () => 296);
@@ -118,7 +138,7 @@ console.log('C mode:', ic.mode, '| journey:', ic.journey.state, '| hours:', ic.h
 assert.equal(ic.mode.mode, 'settled');
 assert.equal(ic.journey.state, 'clear');
 assert.equal(ic.boost, null);
-assert.equal(ic.journey.checks.models, true, 'models agree it stays dry');
+assert.equal(ic.models.rainy, 0, 'models agree it stays dry');
 assert.ok(ic.hours.every((h) => h.level === 'High' || h.level === 'Moderate'), 'a dry forecast all models agree on is confident');
 console.log('  ok  settled weather: "settled", no warning, confident dry hours');
 

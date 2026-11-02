@@ -647,8 +647,10 @@ function renderInsight(r) {
   }
   const sat = ins.sat;
   if (sat && sat.ok) {
-    if ((sat.trend === 'rapid' || sat.trend === 'developing') && sat.where) {
+    if (ins.satVerdict === 'storm' && sat.where) {
       add('warn', `Satellite: cloud tops climbing ${sat.trend === 'rapid' ? 'fast ' : ''}<b>${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)}</b> (${sat.coolingK15} °C in 15 min)`, 'Satellite');
+    } else if (ins.satVerdict === 'high-cloud' && sat.where) {
+      add('no', `Satellite: cloud tops cooling ${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)}, but the air is stable: most likely high cloud spreading in, not a storm`, 'Satellite');
     } else if (sat.trend === 'decaying') add('no', 'Satellite: storm clouds nearby are weakening', 'Satellite');
     else if (sat.trend === 'clear') add('ok', 'Satellite: no storm clouds within 50 km', 'Satellite');
     else add('no', `Satellite: no growing storm clouds within 50 km${sat.cloudShare >= 0.3 ? ` (cloud tops down to ${sat.coldestC} °C)` : ''}`, 'Satellite');
@@ -698,8 +700,9 @@ function renderInsight(r) {
   // storm watch: satellite, thunderstorm potential, lightning
   rows.length = 0;
   if (sat && sat.ok) {
-    const T = { rapid: ['↑ Rapidly developing', 'hot'], developing: ['↑ Developing', 'hot'], steady: ['Steady', ''], decaying: ['↓ Weakening', ''], clear: ['No storm clouds', 'ok'] }[sat.trend];
-    kv('Cloud development', T[0], sat.where ? `${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)} · ${sat.coolingK15} °C in 15 min` : 'within 50 km', T[1]);
+    let T = { rapid: ['↑ Rapidly developing', 'hot'], developing: ['↑ Developing', 'hot'], steady: ['Steady', ''], decaying: ['↓ Weakening', ''], clear: ['No storm clouds', 'ok'] }[sat.trend];
+    if (ins.satVerdict === 'high-cloud') T = ['High cloud spreading in', ''];
+    kv('Cloud development', T[0], sat.where ? `${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)} · ${sat.coolingK15} °C in 15 min${ins.satVerdict === 'high-cloud' ? ' · stable air' : ''}` : 'within 50 km', T[1]);
     kv('Coldest cloud top', `${sat.coldestC} °C`, sat.coldestC <= -40 ? 'deep storm cloud (below −40 °C)' : sat.coldestC <= -10 ? 'cloud above freezing level' : 'low or no cloud', sat.coldestC <= -40 ? 'hot' : '');
     kv('Satellite image', `${sat.ageMin} min old`, 'Meteosat-9 infrared, every 15 min');
   } else {
@@ -711,7 +714,7 @@ function renderInsight(r) {
   }
   kv('Lightning', 'No open feed for India', `${linkOut(`https://map.blitzortung.org/#8/${r.lat.toFixed(2)}/${r.lon.toFixed(2)}`, 'Live map (Blitzortung)')}`);
   $('storm-kv').innerHTML = rows.join('');
-  const devLabel = sat && sat.ok ? { rapid: 'Developing', developing: 'Developing', steady: 'Quiet', decaying: 'Easing', clear: 'Quiet' }[sat.trend] : '—';
+  const devLabel = sat && sat.ok ? (ins.satVerdict === 'storm' ? 'Developing' : ins.satVerdict === 'high-cloud' ? 'Quiet' : { rapid: 'Developing', developing: 'Developing', steady: 'Quiet', decaying: 'Easing', clear: 'Quiet' }[sat.trend]) : '—';
   $('sw-chip').textContent = devLabel;
   $('sw-chip').dataset.level = devLabel === 'Developing' ? 'low' : devLabel === 'Quiet' || devLabel === 'Easing' ? 'high' : 'none';
   $('storm-note').textContent = 'Satellite: Meteosat-9 (EUMETSAT) infrared, about 30 minutes behind real time; cloud tops that cool fast mark storms forming before radar sees rain. Lightning: Blitzortung is a volunteer network, not for safety decisions.';

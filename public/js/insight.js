@@ -91,11 +91,27 @@ export function predictionMode({ summary: s, nc, radarConf, sat, thunder, models
   if (s.rainingNow) return { mode: 'tracking', why: 'overhead' };
   if (s.startMin != null && s.etaFromRadar) return { mode: 'tracking', why: 'approaching' };
   const convective = !!thunder && (thunder.share >= 0.15 || thunder.cape >= 800);
-  const satGrowing = !!sat && sat.ok && (sat.trend === 'rapid' || sat.trend === 'developing') && sat.where && sat.where.distKm <= 50;
+  const verdict = satelliteVerdict({ sat, thunder, models });
   const modelRain = !!models && models.rainy >= Math.max(2, models.n * 0.25);
-  if (satGrowing || (convective && (modelRain || s.maxP >= 0.2))) return { mode: 'developing', why: satGrowing ? 'satellite' : 'models' };
+  if (verdict === 'storm' || (convective && (modelRain || s.maxP >= 0.2))) return { mode: 'developing', why: verdict === 'storm' ? 'satellite' : 'models' };
   if (s.startMin != null || s.maxP >= 0.2) return { mode: 'models', why: 'later' };
   return { mode: 'settled', why: 'dry' };
+}
+
+/**
+ * What cooling cloud tops on satellite most likely are. Growing storms need unstable air: with stable
+ * air (little CAPE, no model thunder or rain) cooling tops are almost always high cloud spreading in,
+ * for example a cyclone's cirrus outflow, not a storm forming.
+ *   storm       growth within 50 km and the air can support storms
+ *   high-cloud  growth within 50 km but stable air
+ *   null        no growth (or no satellite)
+ */
+export function satelliteVerdict({ sat, thunder, models }) {
+  const growing = !!sat && sat.ok && (sat.trend === 'rapid' || sat.trend === 'developing') && sat.where && sat.where.distKm <= 50;
+  if (!growing) return null;
+  const unstable = !!thunder && (thunder.share >= 0.05 || thunder.cape >= 300);
+  const modelRain = !!models && models.rainy >= 1;
+  return unstable || modelRain ? 'storm' : 'high-cloud';
 }
 
 /**
@@ -161,20 +177,22 @@ export function chanceBy(blended, untilMin) {
  * Data for the "rain journey" view: where the rain is, how it moves, and when it gets here.
  * States: approaching | overhead | developing | nearby | clear | noradar
  */
-export function journeyData({ summary: s, nc, mode, trend, motion, blended, sat, models, ai }) {
+export function journeyData({ summary: s, nc, mode, trend, motion, blended, sat, models, ai, thunder }) {
+  // Which sources back the rain in this forecast: true = supports, false = disagrees, null = nothing
+  // to check. Only meaningful when rain is expected; the page hides them otherwise.
   const checks = {
     radar: null, satellite: null, models: null, ai: null,
   };
   const etaWin = s.startMin != null ? [s.startEarly ?? s.startMin, s.startLate ?? s.startMin] : null;
+  const developing = mode.mode === 'developing';
   if (models && models.n) {
-    if (s.startMin != null || s.rainingNow) checks.models = models.rainy >= Math.max(1, models.n / 2);
-    else checks.models = models.rainy < Math.max(1, models.n / 2);
+    if (developing) checks.models = models.rainy >= 1 || (!!thunder && thunder.share >= 0.1);
+    else checks.models = models.rainy >= Math.max(1, models.n / 2);
   }
   if (sat && sat.ok) {
     const growing = sat.trend === 'rapid' || sat.trend === 'developing';
-    if (mode.mode === 'developing') checks.satellite = growing;
-    else if (s.rainingNow || s.startMin != null) checks.satellite = sat.cloudShare >= 0.15 || growing;
-    else checks.satellite = !growing;
+    if (developing) checks.satellite = growing ? true : null;
+    else checks.satellite = sat.cloudShare >= 0.15 || growing;
   }
   if (ai && ai.used && Array.isArray(ai.pin)) {
     const j = etaWin ? clamp(Math.round(etaWin[0] / 10) - 1, 0, 11) : 5;
@@ -206,7 +224,7 @@ export function journeyData({ summary: s, nc, mode, trend, motion, blended, sat,
     };
   }
   if (mode.mode === 'developing') {
-    checks.radar = false;
+    checks.radar = null; // radar cannot see a storm before it forms: nothing to check yet
     return {
       state: 'developing', checks, mode: mode.mode, trend,
       where: sat && sat.ok && sat.where ? sat.where : null, cooling: sat && sat.ok ? sat.coolingK15 : null,

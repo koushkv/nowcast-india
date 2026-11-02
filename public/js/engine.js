@@ -15,7 +15,7 @@ import { clamp, haversineKm, vectorToBearing, RAIN } from './util.js';
 import { covers as aiCovers, runModel, sampleAt, trustWeights } from './ai.js';
 import { nearestRadars, radarConfidence } from './stations.js';
 import { fetchSatellite } from './satellite.js';
-import { radarTrend, modelAgreement, thunderPotential, predictionMode, hourConfidence, journeyData, advectToNow } from './insight.js';
+import { radarTrend, modelAgreement, thunderPotential, predictionMode, satelliteVerdict, hourConfidence, journeyData, advectToNow } from './insight.js';
 
 const R1F = 2; // R1 = native radar grid downsampled by 2 (~2.4 km)
 // timeline steps (5 min each) logged for later verification: 0–60 min densely, then sparser to 5 h
@@ -351,10 +351,11 @@ export async function runForecast(o) {
     radars, radarConf, trend, sat, models: agreement, thunder, mode,
     hours: hourConfidence({ blended, nwp, nwpP: det ? nwpP : null, ncQuality }),
     journey: journeyData({
-      summary, nc, mode, trend, blended, sat, models: agreement, ai: aiInfo,
+      summary, nc, mode, trend, blended, sat, models: agreement, ai: aiInfo, thunder,
       motion: radarInfo ? radarInfo.motion : null,
     }),
     boost: blended.satBoost || null,
+    satVerdict: satelliteVerdict({ sat, thunder, models: agreement }),
     nearestNow: nc && nc.nearest ? { ...advectToNow(nc.nearest, radarInfo && radarInfo.motion, nc.ageMin), rate: nc.nearest.rate } : null,
   };
   return {
