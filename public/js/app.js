@@ -2,32 +2,35 @@
 import { runForecast, briefing } from './engine.js';
 import { RadarMap, RADAR_LEGEND, CHANCE_GRADIENT } from './map.js';
 import { drawNextHour } from './charts.js';
-import { loadUnits, saveUnits, makeFormat } from './format.js';
-import { compassWords, rateCategory, nextFrame } from './util.js';
+import { loadUnits, saveUnits, makeFormat, timeFormatter } from './format.js';
+import { compass16, compassWords, rateCategory, nextFrame } from './util.js';
 import { pinVariable, pinWindDir, setRelayBase } from './nwp.js';
 import { setRadarRelay } from './radar.js';
 import { Scorecard } from './scorecard.js';
 import { loadModel } from './ai.js';
+import { journeyHTML } from './journey.js';
 
 const $ = (id) => document.getElementById(id);
 const LOC_KEY = 'nowcast.location.v1';
 const PREF_KEY = 'nowcast.prefs.v1';
 const REFRESH_MS = 5 * 60 * 1000;
+const STALE_MS = 12 * 60 * 1000;
 const scorecard = new Scorecard();
 
 // The forecast covers India (and the radar/AI grid around it).
 const INDIA = { latMin: 6, latMax: 37.5, lonMin: 67.5, lonMax: 98 };
 const inIndia = (lat, lon) => lat >= INDIA.latMin && lat <= INDIA.latMax && lon >= INDIA.lonMin && lon <= INDIA.lonMax;
 const DEFAULT_PLACE = [28.6139, 77.209, 'New Delhi'];
+const DEFAULT_TZ = 'Asia/Kolkata';
 
 const state = {
-  lat: null, lon: null, name: '', nameFor: '', units: loadUnits(), prefs: loadPrefs(),
+  lat: null, lon: null, name: '', units: loadUnits(), prefs: loadPrefs(),
   result: null, fmt: null, frameIdx: 0, framesMeta: [], playing: false, playTimer: null,
-  runId: 0, running: false, lastRun: 0, nhHover: null, alerted: '', source: '', mapMode: 'radar',
+  runId: 0, running: false, lastRun: 0, lastOk: 0, failed: false, nhHover: null, alerted: '', source: '', mapMode: 'radar',
 };
 
 function loadPrefs() {
-  try { return { theme: 'system', alert: 'off', ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch { return { theme: 'system', alert: 'off' }; }
+  try { return { alert: 'off', ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch { return { alert: 'off' }; }
 }
 function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(state.prefs)); } catch { /* ignore */ } }
 
@@ -72,7 +75,7 @@ function computeForecast(lat, lon, onStage) {
   const onMain = async () => {
     let ai = null;
     try { ai = await loadModel(`${location.origin}/ai`); } catch { /* no model */ }
-    const r = await runForecast({ lat, lon, calib, skill, ai, fetchImpl: cachedFetch, onStage });
+    const r = await runForecast({ lat, lon, calib, skill, ai, fetchImpl: cachedFetch, onStage, satBase: location.origin });
     const m = (ai && ai.metrics) || null;
     r.aiStatus = {
       model: !!(ai && ai.model), version: ai && ai.model ? ai.model.man.version : null,
@@ -115,28 +118,47 @@ function computeForecast(lat, lon, onStage) {
   });
 }
 
-// ---------- theme ----------
-const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-function isDark() {
-  if (state.prefs.theme === 'dark') return true;
-  if (state.prefs.theme === 'light') return false;
-  return !!(darkQuery && darkQuery.matches);
+// ---------- header: station clock and data status ----------
+let clockFmt = null;
+let clockKey = '';
+function tzLabel(tz) {
+  if (/^Asia\/(Kolkata|Calcutta)$/.test(tz)) return 'IST';
+  try {
+    const part = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date()).find((x) => x.type === 'timeZoneName');
+    return part ? part.value : '';
+  } catch { return ''; }
 }
-function applyTheme() {
-  const root = document.documentElement;
-  if (state.prefs.theme === 'system') root.removeAttribute('data-theme');
-  else root.setAttribute('data-theme', state.prefs.theme);
-  if (radarMap) radarMap.setTheme(isDark());
-  redrawCharts();
+function tickClock() {
+  const tz = (state.result && state.result.timezone) || DEFAULT_TZ;
+  const key = `${tz}|${state.units.clock}`;
+  if (key !== clockKey) {
+    clockKey = key;
+    clockFmt = timeFormatter(state.units.clock, tz, true);
+    $('clock-tz').textContent = tzLabel(tz);
+  }
+  $('clock').textContent = clockFmt.format(new Date());
+  if (!state.running && !state.failed && state.lastOk && Date.now() - state.lastOk > STALE_MS) setLive('stale', 'Delayed');
+}
+function setLive(st, text) {
+  const el = $('live');
+  if (el.dataset.state === st && $('live-text').textContent === text) return;
+  el.dataset.state = st;
+  $('live-text').textContent = text;
+}
+function liveFromResult(r) {
+  if (!r.radar && !r.nwp) return setLive('offline', 'No data');
+  if (!r.radar) return setLive('stale', 'Models only');
+  if (r.radar.stale || r.radar.ageMin > 30) return setLive('stale', 'Radar delayed');
+  return setLive('live', 'Live');
 }
 
 // ---------- map ----------
 let radarMap = null;
 function initMap() {
-  radarMap = new RadarMap($('map'), { onPick: (lat, lon) => setLocation(lat, lon, { source: 'map' }), dark: isDark() });
+  radarMap = new RadarMap($('map'), { onPick: (lat, lon) => setLocation(lat, lon, { source: 'map' }), dark: true });
   $('legend').innerHTML = RADAR_LEGEND.map(([n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('') +
-    '<span><i style="background:repeating-linear-gradient(45deg,rgba(128,136,148,.6) 0 2px,transparent 2px 5px)"></i>No radar</span>' +
-    '<span><i style="background:var(--track);height:3px;vertical-align:3px"></i>Path of rain toward you (1 h)</span>';
+    '<span><i style="background:repeating-linear-gradient(45deg,rgba(150,150,150,.55) 0 2px,transparent 2px 5px)"></i>No radar</span>' +
+    '<span><i style="background:var(--track);height:2px;vertical-align:3px"></i>Rain path (1 h)</span>';
 }
 
 // ---------- location ----------
@@ -180,8 +202,10 @@ function setLocation(lat, lon, { name = '', source = 'user', zoom } = {}) {
 function renderLocation() {
   $('loc-name').textContent = state.name || 'Dropped pin';
   const ns = state.lat >= 0 ? 'N' : 'S', ew = state.lon >= 0 ? 'E' : 'W';
-  $('loc-sub').textContent = `${Math.abs(state.lat).toFixed(3)}° ${ns}, ${Math.abs(state.lon).toFixed(3)}° ${ew}`;
-  document.title = state.name ? `${state.name.split(',')[0]} · Nowcast` : 'Nowcast';
+  const r = state.result;
+  const elev = r && r.lat === state.lat && r.lon === state.lon && Number.isFinite(r.elevation) ? ` · ${Math.round(r.elevation)} m` : '';
+  $('loc-sub').textContent = `${Math.abs(state.lat).toFixed(3)}°${ns}  ${Math.abs(state.lon).toFixed(3)}°${ew}${elev}`;
+  document.title = state.name ? `${state.name.split(',')[0]} · Nowcast` : 'Nowcast · Rain forecast for India';
 }
 
 let geoTimer = null;
@@ -233,7 +257,7 @@ async function searchPlaces(q) {
       list.appendChild(li);
     }
   } catch {
-    list.innerHTML = '<li class="hint">Search is unavailable right now. Tap the map to place the pin instead.</li>';
+    list.innerHTML = '<li class="hint">Search is unavailable right now. Tap the map to place the marker instead.</li>';
   }
 }
 
@@ -249,7 +273,7 @@ function useMyLocation() {
     (err) => {
       btn.classList.remove('spin');
       showNotice(err.code === 1
-        ? 'Location access is blocked. Allow it in your browser settings, or tap the map to drop the pin.'
+        ? 'Location access is blocked. Allow it in your browser settings, or tap the map to place the marker.'
         : 'Could not find your location. Tap the map or search instead.');
     },
     { enableHighAccuracy: false, timeout: 12000, maximumAge: 120000 },
@@ -265,6 +289,7 @@ async function refresh(force = false) {
   state.lastRun = Date.now();
   $('refresh-btn').classList.add('spin');
   const newPlace = !state.result || state.result.lat !== state.lat || state.result.lon !== state.lon;
+  if (newPlace || state.failed) setLive('loading', 'Updating');
   if (newPlace) {
     setStatus('loading', 'Updating');
     $('title').textContent = 'Checking the radar…';
@@ -283,11 +308,16 @@ async function refresh(force = false) {
     });
     if (id !== state.runId) return;
     state.result = r;
+    state.lastOk = Date.now();
+    state.failed = false;
     safely('scorecard', () => scorecard.ingest(r));
     renderAll(true);
+    liveFromResult(r);
     checkAlert();
   } catch (e) {
     if (id !== state.runId) return;
+    state.failed = true;
+    setLive('offline', 'Offline');
     setStatus('loading', 'Offline');
     $('title').textContent = 'Can’t get a forecast right now';
     $('detail').textContent = (e && e.message) || 'The weather data services could not be reached.';
@@ -316,11 +346,15 @@ function renderAll(resetFrame = false) {
   const r = state.result;
   if (!r) return;
   state.fmt = makeFormat(state.units, r.timezone);
+  clockKey = '';
+  safely('location', renderLocation);
   safely('summary', () => renderSummary(r));
-  safely('strip', () => renderStrip(r));
+  safely('insight', () => renderInsight(r));
+  safely('hours', () => renderHours(r));
   safely('about', () => renderAbout(r));
   safely('track', () => renderTrack(r));
   safely('map', () => renderMap(r, resetFrame));
+  safely('statusbar', () => renderStatusBar(r));
   safely('charts', redrawCharts);
 }
 
@@ -334,6 +368,21 @@ function safely(name, fn) {
 }
 
 const minutesFmt = (r) => (m) => state.fmt.time(r.nowSec + m * 60);
+const INTENSITY = ['', 'Light', 'Moderate', 'Heavy', 'Very heavy'];
+const RAIN_VAR = ['--rain-1', '--rain-1', '--rain-2', '--rain-3', '--rain-4'];
+
+/** One readout value: big number, optional unit and a second line. */
+function setReadout(id, value, { unit = '', sub = '', tone = '' } = {}) {
+  const el = $(id);
+  el.className = tone;
+  el.innerHTML = `${esc(value)}${unit ? `<span class="u">${esc(unit)}</span>` : ''}${sub ? `<span class="s">${esc(sub)}</span>` : ''}`;
+}
+function inMin(m) {
+  if (m <= 1) return 'now';
+  if (m < 60) return `in ${Math.round(m)} min`;
+  const h = Math.floor(m / 60), mm = Math.round(m - h * 60);
+  return `in ${h} h${mm ? ` ${mm} min` : ''}`;
+}
 
 function renderSummary(r) {
   const f = state.fmt;
@@ -348,29 +397,68 @@ function renderSummary(r) {
   setStatus(thunder ? 'thunder' : b.state, text);
   $('title').textContent = b.title;
   $('detail').textContent = b.detail;
-  $('approach').textContent = b.approach;
-  $('approach').hidden = !b.approach;
+  // where the rain is: the same measured position the rain journey and radar panel show
+  const jy = r.insight && r.insight.journey;
+  const approach = jy && jy.state === 'approaching' && Number.isFinite(jy.speedKmh)
+    ? `The rain is about ${f.dist(jy.distKm)} to the ${compassWords(jy.bearing)}, moving toward you at ${f.speed(jy.speedKmh)}.`
+    : b.approach;
+  $('approach').textContent = approach;
+  $('approach').hidden = !approach;
 
-  // stats
-  if (r.nwp) {
-    const t = pinVariable(r.nwp, 'temp', 0).mean;
-    const fl = pinVariable(r.nwp, 'feels', 0).mean;
-    $('s-temp').textContent = f.temp(t);
-    $('s-feels').textContent = Number.isFinite(fl) && Math.abs(fl - t) >= 1 ? `Feels like ${f.temp(fl)}` : '';
+  // ---- rain readouts ----
+  const at = (m) => f.time(r.nowSec + m * 60);
+  if (s.rainingNow) {
+    setReadout('r-now', f.rate(s.rateNow), { unit: f.rateUnit(), sub: INTENSITY[Math.max(1, s.categoryNow)], tone: 'wet' });
   } else {
-    $('s-temp').textContent = '–';
-    $('s-feels').textContent = '';
+    setReadout('r-now', f.rate(0), { unit: f.rateUnit(), sub: 'Dry', tone: 'dim' });
   }
   let nh = 0;
   for (let i = 0; i <= 12; i++) nh = Math.max(nh, r.blended.prob[0][i]);
-  $('s-hour').textContent = f.pct(nh);
-  $('s-total').textContent = f.amount(s.total5h);
+  setReadout('s-hour', String(Math.round(nh * 100)), { unit: '%', sub: nh >= 0.5 ? 'Likely' : nh >= 0.2 ? 'Possible' : 'Unlikely', tone: nh >= 0.5 ? 'wet' : nh < 0.1 ? 'dim' : '' });
+  if (s.rainingNow) {
+    $('r-start-label').textContent = 'Stops';
+    if (s.endMin != null) setReadout('r-start', at(s.endMin), { sub: inMin(s.endMin) });
+    else setReadout('r-start', '—', { sub: 'Not within 5 h', tone: 'dim' });
+  } else {
+    $('r-start-label').textContent = 'Starts';
+    if (s.startMin != null) setReadout('r-start', at(s.startMin), { sub: inMin(s.startMin), tone: 'wet' });
+    else setReadout('r-start', '—', { sub: 'None expected', tone: 'dim' });
+  }
+  if (s.peakRate >= 0.3 && s.peakMin != null) {
+    setReadout('r-peak', f.rate(s.peakRate), { unit: f.rateUnit(), sub: `${INTENSITY[Math.max(1, rateCategory(s.peakRate))]} · ${at(s.peakMin)}`, tone: rateCategory(s.peakRate) >= 3 ? 'hot' : '' });
+  } else {
+    setReadout('r-peak', '—', { sub: 'No rain expected', tone: 'dim' });
+  }
+  const [tv, tu] = f.amount(s.total5h).split(' ');
+  setReadout('s-total', tv, { unit: tu || '', sub: 'Most likely', tone: s.total5h < 0.1 ? 'dim' : '' });
+  if (r.nwp && Number.isFinite(s.thunderMax)) {
+    setReadout('r-thunder', String(Math.round(s.thunderMax * 100)), { unit: '%', sub: s.thunderMax >= 0.25 ? 'Possible' : 'Unlikely', tone: s.thunderMax >= 0.25 ? 'hot' : 'dim' });
+  } else {
+    setReadout('r-thunder', '—', { sub: 'Needs models', tone: 'dim' });
+  }
 
+  // ---- conditions (weather-model consensus for the current hour) ----
+  if (r.nwp) {
+    const v = (k) => pinVariable(r.nwp, k, 0).mean;
+    const t = v('temp'), fl = v('feels'), rh = v('rh'), cl = v('cloud'), ws = v('wind'), gu = v('gust');
+    const dir = pinWindDir(r.nwp, 0);
+    setReadout('s-temp', f.tempNum(t), { unit: f.tempUnit() });
+    setReadout('s-feels', f.tempNum(fl), { unit: f.tempUnit(), tone: Number.isFinite(fl) && fl - t >= 4 ? 'hot' : '' });
+    setReadout('c-rh', Number.isFinite(rh) ? String(Math.round(rh)) : '–', { unit: '%' });
+    setReadout('c-cloud', Number.isFinite(cl) ? String(Math.round(cl)) : '–', { unit: '%' });
+    setReadout('c-wind', `${Number.isFinite(dir) && ws >= 2 ? `${compass16(dir)} ` : ''}${f.wind(ws)}`, { unit: f.windUnit() });
+    setReadout('c-gust', f.wind(gu), { unit: f.windUnit() });
+  } else {
+    for (const id of ['s-temp', 's-feels', 'c-rh', 'c-cloud', 'c-wind', 'c-gust']) setReadout(id, '—', { tone: 'dim' });
+  }
+
+  const conf = s.confidence || '';
+  $('confidence').textContent = conf ? `Confidence · ${conf}` : '';
+  $('confidence').dataset.level = conf.toLowerCase();
   const radarT = r.radar ? f.time(r.nc.tLatest) : null;
-  $('updated').textContent = `Updated ${f.time(r.nowSec)}${radarT ? ` · radar image ${radarT}` : ''}`;
-  $('confidence').textContent = `Forecast confidence: ${s.confidence.toLowerCase()}`;
+  $('updated').textContent = `Updated ${f.time(r.nowSec)}${radarT ? ` · radar image ${radarT}` : ''} · refreshes every 5 min`;
 
-  // notices
+  // ---- notices ----
   const notes = [];
   if (!r.radar) notes.push('Live radar is unavailable right now, so this forecast uses weather models only and timing is less precise.');
   else if (r.radar.coverageNear < 0.5) notes.push('Weather radar does not cover this spot well, so the forecast relies more on weather models.');
@@ -384,7 +472,7 @@ function renderSummary(r) {
       : 'Weather models are unreachable right now, so this is a radar-only forecast for the next 3 hours. It retries automatically every few minutes.');
   }
   if (state.source === 'default' && !state.dismissedDefault) {
-    showNotice(`Showing ${state.name || 'a nearby city'}. <button class="btn" type="button" id="notice-gps">Use my location</button> or tap the map to move the pin.`, true);
+    showNotice(`Showing ${esc(state.name || 'a nearby city')}. <button class="btn" type="button" id="notice-gps">Use my location</button> or tap the map to move the marker.`, true);
     const g = $('notice-gps');
     if (g) g.addEventListener('click', () => { state.dismissedDefault = true; useMyLocation(); });
   } else {
@@ -398,8 +486,6 @@ function slice(b, n) {
   return out;
 }
 
-const INTENSITY = ['', 'Light', 'Moderate', 'Heavy', 'Very heavy'];
-
 function redrawCharts() {
   const r = state.result;
   if (!r || !state.fmt) return;
@@ -409,59 +495,255 @@ function redrawCharts() {
   if (state.nhHover != null) {
     const i = state.nhHover;
     const cat = rateCategory(r.blended.q50[i]);
-    $('nh-readout').textContent = `${f.time(r.blended.times[i])}: ${f.pct(P[i])}${P[i] >= 0.2 && cat ? ` · ${INTENSITY[cat].toLowerCase()}` : ''}`;
+    $('nh-readout').textContent = `${f.time(r.blended.times[i])} · ${f.pct(P[i])}${P[i] >= 0.2 && cat ? ` · ${INTENSITY[cat].toLowerCase()}` : ''}`;
   } else {
     let mi = 0;
     for (let i = 0; i <= 12; i++) if (P[i] > P[mi]) mi = i;
-    $('nh-readout').textContent = P[mi] >= 0.1 ? `Highest ${f.pct(P[mi])} at ${f.time(r.blended.times[mi])}` : 'No rain expected';
+    $('nh-readout').textContent = P[mi] >= 0.1 ? `Max ${f.pct(P[mi])} at ${f.time(r.blended.times[mi])}` : 'No rain expected';
   }
 }
 
-function dropIcon(color, chance) {
-  const strong = chance >= 0.1;
-  const fill = strong ? color : 'none';
-  const op = strong ? (0.45 + 0.55 * Math.min(1, chance * 1.4)).toFixed(2) : '1';
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5C9 7 5.5 10.6 5.5 14.5a6.5 6.5 0 0 0 13 0C18.5 10.6 15 7 12 2.5z" fill="${fill}" fill-opacity="${op}" stroke="${strong ? color : 'var(--muted)'}" stroke-width="1.6"/></svg>`;
-}
 function arrowSvg(fromDeg) {
   const rot = (fromDeg + 180) % 360; // point where the wind blows to
   return `<svg viewBox="0 0 12 12" style="transform:rotate(${rot}deg)" aria-hidden="true"><path d="M6 1 L10 10 L6 8 L2 10 Z" fill="currentColor"/></svg>`;
 }
 
-function renderStrip(r) {
+/**
+ * Next 5 hours on the clock's half hours: "Now" up to the next :00 or :30, then every 30 minutes.
+ * Each row shows the most likely rain type, the highest chance and any thunder risk in its window.
+ */
+function renderHours(r) {
   const f = state.fmt;
   const b = r.blended;
-  const cols = ['--rain-1', '--rain-1', '--rain-2', '--rain-3', '--rain-4'];
+  const n = b.times.length;
+  let k0 = 1; // first half-hour mark after now (the 5-minute grid always lands on one)
+  while (k0 < 6 && b.times[k0] % 1800 !== 0) k0++;
+  const starts = [0];
+  for (let i = k0; i <= 60 && i < n; i += 6) starts.push(i);
+  const conf = (r.insight && r.insight.hours) || [];
   let html = '';
-  for (let i = 0; i <= 60; i += 6) {
+  let group = -1;
+  for (let row = 0; row < starts.length; row++) {
+    const i = starts[row];
+    const hr = Math.max(0, Math.min(4, Math.floor((b.times[i] - r.nowSec) / 3600)));
+    if (hr !== group) {
+      group = hr;
+      const c = conf[hr];
+      const span = hr === 0 ? 'Now → +1 h' : `+${hr} → +${hr + 1} h`;
+      if (c) {
+        const bars = Math.max(1, Math.min(5, Math.round(c.score * 5)));
+        const meter = Array.from({ length: 5 }, (_, k) => `<i class="${k < bars ? 'on' : ''}"></i>`).join('');
+        html += `<tr class="grp"><th colspan="5" scope="rowgroup">${span}<span class="cf ${c.level.toLowerCase().replace(/[^a-z]+/g, '-')}">${esc(c.level)} · ${esc(c.led)} ${meter}</span></th></tr>`;
+      } else {
+        html += `<tr class="grp"><th colspan="5" scope="rowgroup">${span}</th></tr>`;
+      }
+    }
+    const end = Math.min(row + 1 < starts.length ? starts[row + 1] : i + 6, n);
     let p = 0, q50 = 0, ts = 0;
-    for (let k = i; k < Math.min(i + 6, b.times.length); k++) {
+    for (let k = i; k < end; k++) {
       p = Math.max(p, b.prob[0][k]);
       q50 = Math.max(q50, b.q50[k]);
       ts = Math.max(ts, b.thunder[k]);
     }
     const cat = Math.max(1, rateCategory(q50));
-    const color = `var(${cols[cat]})`;
+    const color = `var(${RAIN_VAR[cat]})`;
     const word = p >= 0.2 ? INTENSITY[cat] : '';
-    let temp = '–', wind = '';
+    let temp = '–', wind = '–';
     if (r.nwp) {
       temp = f.temp(pinVariable(r.nwp, 'temp', i).mean);
-      const ws = pinVariable(r.nwp, 'wind', i).mean;
       const dir = pinWindDir(r.nwp, i);
-      wind = `${Number.isFinite(dir) ? arrowSvg(dir) : ''}${f.wind(ws)} ${f.windUnit()}`;
+      wind = `${Number.isFinite(dir) ? arrowSvg(dir) : ''}${f.wind(pinVariable(r.nwp, 'wind', i).mean)}`;
     }
     const label = i === 0 ? 'Now' : f.time(b.times[i]);
-    const aria = `${label}: ${f.pct(p)} chance of rain${word ? `, ${word.toLowerCase()}` : ''}${ts >= 0.25 ? ', thunderstorms possible' : ''}, ${temp}`;
-    html += `<li class="slot" aria-label="${aria}">` +
-      `<span class="t${i === 0 ? ' now' : ''}">${label}</span>` +
-      dropIcon(color, p) +
-      `<span class="p${p < 0.1 ? ' low' : ''}">${f.pct(p)}</span>` +
-      `<span class="i">${word}</span>` +
-      (ts >= 0.25 ? `<span class="ts">Thunder ${f.pct(ts)}</span>` : '') +
-      `<span class="temp">${temp}</span>` +
-      `<span class="w">${wind}</span></li>`;
+    const pct = Math.round(p * 100);
+    html += `<tr${i === 0 ? ' class="now"' : ''}>` +
+      `<td class="t">${label}</td>` +
+      `<td class="rain${word ? '' : ' none'}">${word ? `<i style="background:${color}"></i>${word}` : '—'}${ts >= 0.25 ? `<span class="ts" title="Thunderstorm chance">TS ${Math.round(ts * 100)}%</span>` : ''}</td>` +
+      `<td><div class="ch"><span class="bar"><span style="width:${pct}%;background:${p >= 0.2 ? color : '#3a3a3a'}"></span></span><b${p < 0.1 ? ' class="low"' : ''}>${pct}%</b></div></td>` +
+      `<td class="num">${temp}</td>` +
+      `<td class="num w">${wind}</td></tr>`;
   }
-  $('strip').innerHTML = html;
+  $('hours').innerHTML = html;
+}
+
+// ---------- explanations: mode, why, rain journey, radar, storm watch ----------
+const MODE_TEXT = {
+  tracking: ['Radar tracking', {
+    overhead: 'Rain is over you now and is being followed on radar. End times are usually right to within 15–30 minutes.',
+    approaching: 'Rain already on radar is moving toward you. This is the most predictable case: arrival is usually right to within 10–20 minutes.',
+  }],
+  developing: ['Convective development', {
+    satellite: 'No rain on radar is heading here, but satellite shows storm clouds growing nearby. Radar cannot track a storm before it forms, so rain could start with little warning and timing is uncertain.',
+    models: 'No rain on radar is heading here yet, but the air is unstable and the models expect showers to form. Radar cannot track storms before they form, so timing is uncertain.',
+  }],
+  models: ['Model-led', {
+    'no-radar': 'There is no usable radar view of this spot, so the forecast comes from the weather models. Timing can be off by an hour or more.',
+    later: 'Nothing on radar is moving toward you; the rain in this forecast comes from the weather models and is expected later. Timing can be off by an hour or more.',
+  }],
+  settled: ['Settled', { dry: 'No rain on radar is moving toward you, nothing is developing, and the models agree it stays dry.' }],
+};
+const CONF_WORD = { High: 'high', Medium: 'moderate', Low: 'low' };
+const linkOut = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)} ↗</a>`;
+
+function renderInsight(r) {
+  const f = state.fmt;
+  const ins = r.insight;
+  if (!ins) return;
+  const s = r.summary;
+  const at = (m) => f.time(r.nowSec + m * 60);
+  const dir = (deg) => compass16(deg);
+
+  // prediction mode
+  const [modeName, texts] = MODE_TEXT[ins.mode.mode] || ['', {}];
+  $('mode').hidden = !modeName;
+  $('mode').dataset.mode = ins.mode.mode;
+  $('mode-v').textContent = modeName;
+  $('mode-d').textContent = texts[ins.mode.why] || Object.values(texts)[0] || '';
+
+  // why: headline chance + reasons, each tagged with its source
+  const j = ins.journey;
+  let nh = 0;
+  for (let i = 0; i <= 12; i++) nh = Math.max(nh, r.blended.prob[0][i]);
+  let big, lbl;
+  if (s.rainingNow) { big = 'Raining'; lbl = 'now, on radar'; }
+  else if (j.state === 'approaching') { big = `${Math.round(j.chance * 100)}%`; lbl = 'chance it reaches you'; }
+  else if (s.startMin != null && s.startMin > 60) { big = `${Math.round(s.maxP * 100)}%`; lbl = `chance by ${at(s.maxPMin)}`; }
+  else { big = `${Math.round(nh * 100)}%`; lbl = 'chance in the next hour'; }
+  const conf = CONF_WORD[s.confidence] || 'moderate';
+  $('why-top').innerHTML = `<span class="big${s.rainingNow || nh >= 0.5 || j.state === 'approaching' ? ' wet' : ''}">${esc(big)}</span><span class="lbl">${esc(lbl)} · ${conf} confidence</span>`;
+
+  const items = [];
+  const add = (tone, html, tag) => items.push({ tone, html, tag });
+  const rd = r.radar;
+  if (!rd) add('warn', 'No usable radar picture right now', 'Radar');
+  else if (s.rainingNow) add('yes', 'Rain is falling here now', 'Radar');
+  else if (j.state === 'approaching') add('yes', `Rain area <b>${esc(f.dist(j.distKm))} ${dir(j.bearing)}</b> is moving toward you`, 'Radar');
+  else if (ins.nearestNow && ins.nearestNow.distKm <= 250) add('no', `Nearest rain on radar: <b>${esc(f.dist(ins.nearestNow.distKm))} ${dir(ins.nearestNow.bearing)}</b>, not heading here`, 'Radar');
+  else add('no', 'No rain on radar within 250 km', 'Radar');
+  if (ins.trend) {
+    const t = ins.trend;
+    const word = t.label === 'strengthening' ? 'strengthening ↑' : t.label === 'weakening' ? 'weakening ↓' : 'steady';
+    add(t.label === 'strengthening' ? 'warn' : 'yes', `Radar trend: <b>${word}</b> (${t.changePct > 0 ? '+' : ''}${t.changePct}% in ${t.minutes} min)`, 'Radar');
+  }
+  if (rd && rd.motion.speedKmh > 3) {
+    if (rd.motion.vectors >= 3) add('yes', `Moving toward the <b>${dir(rd.motion.toDeg)}</b> at <b>${esc(f.speed(rd.motion.speedKmh))}</b>`, 'Radar');
+    else if (rd.steer) add('no', `Too little rain to track; wind ~3 km up would carry it toward the ${dir((rd.steer.fromDeg + 180) % 360)} at ${esc(f.speed(rd.steer.speedKmh))}`, 'Models');
+  }
+  if (!s.rainingNow && s.startMin != null) {
+    if (j.state === 'approaching') {
+      const win = j.etaLate - j.etaEarly >= 4 ? `${Math.round(j.etaEarly)}–${Math.round(j.etaLate)} min` : `${Math.round(j.eta)} min`;
+      add('yes', `Estimated arrival: <b>${win}</b> (${at(j.etaEarly)}–${at(j.etaLate)})`, 'Blend');
+    } else {
+      add('yes', `Most likely from <b>${at(s.startMin)}</b>${s.startLate - s.startEarly >= 20 ? ` (between ${at(s.startEarly)} and ${at(s.startLate)})` : ''}`, 'Blend');
+    }
+  }
+  if (ins.models && ins.models.n) {
+    const m = ins.models;
+    if (m.rainy === 0) add('ok', `All ${m.n} weather models keep it dry for the next 3 h`, 'Models');
+    else add(m.rainy >= m.n / 2 ? 'yes' : 'no', `<b>${m.rainy} of ${m.n}</b> weather models show rain here within 3 h${m.firstTime ? `, from ~${f.time(m.firstTime)}` : ''}`, 'Models');
+  }
+  if (rd && rd.ai && rd.ai.used && Array.isArray(rd.ai.pin) && Number.isFinite(rd.ai.pin[2])) {
+    add(rd.ai.pin[2] >= 0.5 ? 'yes' : 'no', `AI model (trained on Indian radar): <b>${Math.round(rd.ai.pin[2] * 100)}%</b> chance at +30 min`, 'AI');
+  }
+  const sat = ins.sat;
+  if (sat && sat.ok) {
+    if ((sat.trend === 'rapid' || sat.trend === 'developing') && sat.where) {
+      add('warn', `Satellite: cloud tops climbing ${sat.trend === 'rapid' ? 'fast ' : ''}<b>${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)}</b> (${sat.coolingK15} °C in 15 min)`, 'Satellite');
+    } else if (sat.trend === 'decaying') add('no', 'Satellite: storm clouds nearby are weakening', 'Satellite');
+    else if (sat.trend === 'clear') add('ok', 'Satellite: no storm clouds within 50 km', 'Satellite');
+    else add('no', `Satellite: no growing storm clouds within 50 km${sat.cloudShare >= 0.3 ? ` (cloud tops down to ${sat.coldestC} °C)` : ''}`, 'Satellite');
+  }
+  if (ins.thunder && (ins.thunder.level === 'Moderate' || ins.thunder.level === 'High')) {
+    add('warn', `Thunderstorm potential: <b>${ins.thunder.level.toLowerCase()}</b> (CAPE ${ins.thunder.cape.toLocaleString('en-IN')} J/kg)`, 'Models');
+  }
+  if (ins.boost) add('warn', 'Chance raised because storm clouds are forming nearby', 'Blend');
+  const rc = ins.radarConf;
+  if (rd && rc && rc.level === 'Low') {
+    const nr = ins.radars && ins.radars[0];
+    if (rc.limit === 'beam' && nr) add('warn', `Radar view is limited here: the nearest IMD radar (${esc(nr.name)}) is ${esc(f.dist(nr.distKm))} away and its beam passes ~${nr.beamKm.toFixed(1)} km up`, 'Radar');
+    else if (rc.limit === 'age') add('warn', `Radar images are ${Math.round(rd.ageMin)} min old`, 'Radar');
+    else add('warn', 'Weather radar barely covers this spot', 'Radar');
+  }
+  const ICON = { yes: '●', no: '○', warn: '!', ok: '✓' };
+  $('why-list').innerHTML = items.map((x) => `<li class="${x.tone}"><span class="ic" aria-hidden="true">${ICON[x.tone] || '·'}</span><span>${x.html}</span><span class="tag">${esc(x.tag)}</span></li>`).join('');
+  const nsrc = new Set(items.map((x) => x.tag).filter((t) => t !== 'Blend')).size;
+  $('why-src').textContent = `${nsrc} source${nsrc === 1 ? '' : 's'}`;
+
+  // rain journey
+  $('journey').innerHTML = journeyHTML(j, f, r.nowSec);
+  $('journey-src').textContent = { approaching: 'Rain on its way', overhead: 'Raining now', developing: 'Storms may form', nearby: 'Rain nearby', clear: 'All clear', noradar: 'Models only' }[j.state] || '';
+
+  // radar (IMD network)
+  const rows = [];
+  const kv = (k, v, small = '', cls = '') => rows.push(`<div><dt>${esc(k)}</dt><dd class="${cls}">${v}${small ? `<small>${small}</small>` : ''}</dd></div>`);
+  const levelCls = { High: 'ok', Moderate: 'warn', Low: 'hot', None: 'hot' };
+  const why = { beam: 'beam passes high over this spot', age: 'radar images are old', coverage: 'little radar coverage here', unavailable: 'radar unavailable' };
+  kv('Radar confidence', esc(rc.level), rc.level === 'High' ? 'good coverage, fresh images' : why[rc.limit] || '', levelCls[rc.level]);
+  if (rd) kv('Observation age', `${Math.round(rd.ageMin)} min`, `latest image ${f.time(r.nc.tLatest)}`, rd.ageMin > 25 ? 'warn' : '');
+  const nr = ins.radars || [];
+  if (nr[0]) kv('Nearest IMD radar', `${esc(nr[0].name)} · ${esc(f.dist(nr[0].distKm))} ${dir(nr[0].bearing)}`, `beam ~${nr[0].beamKm.toFixed(1)} km above you · ${linkOut(nr[0].url, 'IMD image')}`);
+  if (nr[1]) kv('Next radar', `${esc(nr[1].name)} · ${esc(f.dist(nr[1].distKm))} ${dir(nr[1].bearing)}`, `beam ~${nr[1].beamKm.toFixed(1)} km · ${linkOut(nr[1].url, 'IMD image')}`);
+  if (r.nc) {
+    const nst = ins.nearestNow;
+    kv('Nearest rain', nst && nst.distKm <= 250 ? `${esc(f.dist(nst.distKm))} ${dir(nst.bearing)}` : 'None within 250 km', nst && nst.distKm <= 250 ? 'now, moved on from the latest image' : '', nst && nst.distKm < 30 ? 'wet' : '');
+    kv('Movement', rd.motion.speedKmh > 3 ? `toward ${dir(rd.motion.toDeg)} · ${esc(f.speed(rd.motion.speedKmh))}` : 'Little movement', rd.motion.vectors >= 3 ? `from ${rd.motion.vectors} tracked features` : 'too little rain to track; using upper wind');
+    kv('Estimated arrival', j.state === 'approaching' ? `${Math.round(j.etaEarly)}–${Math.round(j.etaLate)} min` : s.rainingNow ? 'Raining now' : '—', j.state === 'approaching' ? `${at(j.etaEarly)}–${at(j.etaLate)}` : '', j.state === 'approaching' ? 'wet' : '');
+    if (ins.trend) kv('Trend', ins.trend.label === 'strengthening' ? 'Strengthening ↑' : ins.trend.label === 'weakening' ? 'Weakening ↓' : 'Steady', `${ins.trend.changePct > 0 ? '+' : ''}${ins.trend.changePct}% rain in ${ins.trend.minutes} min`, ins.trend.label === 'strengthening' ? 'hot' : '');
+  }
+  $('radar-kv').innerHTML = rows.join('');
+  $('rc-chip').textContent = `Confidence · ${rc.level}`;
+  $('rc-chip').dataset.level = rc.level.toLowerCase();
+  $('radar-note').textContent = `IMD Doppler weather radars, through RainViewer's composite (new image every 10 minutes). Radar confidence takes the weakest of coverage, image age and beam height.${nr[0] && nr[0].beamKm > 4 ? ` This far from a radar its lowest beam passes ~${nr[0].beamKm.toFixed(0)} km up, so low cloud and light rain can be invisible to it.` : ''}`;
+
+  // storm watch: satellite, thunderstorm potential, lightning
+  rows.length = 0;
+  if (sat && sat.ok) {
+    const T = { rapid: ['↑ Rapidly developing', 'hot'], developing: ['↑ Developing', 'hot'], steady: ['Steady', ''], decaying: ['↓ Weakening', ''], clear: ['No storm clouds', 'ok'] }[sat.trend];
+    kv('Cloud development', T[0], sat.where ? `${esc(f.dist(sat.where.distKm))} ${dir(sat.where.bearing)} · ${sat.coolingK15} °C in 15 min` : 'within 50 km', T[1]);
+    kv('Coldest cloud top', `${sat.coldestC} °C`, sat.coldestC <= -40 ? 'deep storm cloud (below −40 °C)' : sat.coldestC <= -10 ? 'cloud above freezing level' : 'low or no cloud', sat.coldestC <= -40 ? 'hot' : '');
+    kv('Satellite image', `${sat.ageMin} min old`, 'Meteosat-9 infrared, every 15 min');
+  } else {
+    kv('Cloud development', 'Unavailable', sat ? esc(sat.reason || '') : 'satellite not loaded', 'warn');
+  }
+  if (ins.thunder) {
+    const th = ins.thunder;
+    kv('Thunderstorm potential', th.level, `CAPE ${th.cape.toLocaleString('en-IN')} J/kg · ${Math.round(th.share * 100)}% of models`, th.level === 'High' || th.level === 'Moderate' ? 'hot' : '');
+  }
+  kv('Lightning', 'No open feed for India', `${linkOut(`https://map.blitzortung.org/#8/${r.lat.toFixed(2)}/${r.lon.toFixed(2)}`, 'Live map (Blitzortung)')}`);
+  $('storm-kv').innerHTML = rows.join('');
+  const devLabel = sat && sat.ok ? { rapid: 'Developing', developing: 'Developing', steady: 'Quiet', decaying: 'Easing', clear: 'Quiet' }[sat.trend] : '—';
+  $('sw-chip').textContent = devLabel;
+  $('sw-chip').dataset.level = devLabel === 'Developing' ? 'low' : devLabel === 'Quiet' || devLabel === 'Easing' ? 'high' : 'none';
+  $('storm-note').textContent = 'Satellite: Meteosat-9 (EUMETSAT) infrared, about 30 minutes behind real time; cloud tops that cool fast mark storms forming before radar sees rain. Lightning: Blitzortung is a volunteer network, not for safety decisions.';
+}
+
+/** Bottom status line: where every input stands right now. */
+function renderStatusBar(r) {
+  const f = state.fmt;
+  const items = [];
+  if (r.radar) {
+    const rd = r.radar;
+    const late = rd.stale || rd.ageMin > 25;
+    items.push(`Radar <b class="${late ? 'warn' : ''}">${f.time(r.nc.tLatest)}</b> · ${Math.round(rd.ageMin)} min old`);
+    items.push(`${rd.frames.length} frames`);
+    const m = rd.motion;
+    if (m.vectors >= 3 && m.speedKmh > 3) items.push(`Rain moving <b>${compass16(m.toDeg)} ${f.speed(m.speedKmh)}</b>`);
+  } else {
+    items.push('Radar <b class="warn">unavailable</b>');
+  }
+  if (r.nwp) {
+    const ens = r.nwp.ensembles.reduce((a, e) => a + e.members.length, 0);
+    items.push(`Models <b>${r.nwp.models.length}</b>${ens ? ` · ensemble <b>${ens}</b>` : ''}`);
+  } else {
+    items.push('Models <b class="warn">offline</b>');
+  }
+  const st = r.aiStatus || {};
+  const ai = r.radar && r.radar.ai;
+  if (ai && ai.used) items.push(`AI <b class="ok">on</b> · ${Math.round(ai.trust60 * 100)}% at 1 h`);
+  else if (st.status === 'collecting') items.push('AI <b>learning</b>');
+  else if (st.model) items.push('AI <b>standby</b>');
+  items.push(`Updated <b>${f.time(r.nowSec)}</b>`);
+  $('sb-data').innerHTML = items.map((x) => `<span>${x}</span>`).join('');
 }
 
 function renderAbout(r) {
@@ -524,7 +806,7 @@ function renderAbout(r) {
   if (!r.nwp) { box.innerHTML = ''; return; }
   const ms = [...r.nwp.models].sort((a, b2) => b2.weight - a.weight);
   const maxW = Math.max(...ms.map((m) => m.weight)) || 1;
-  box.innerHTML = '<h3>How much each model counts right now</h3>' + ms.map((m) => {
+  box.innerHTML = '<h3>Weight of each model right now</h3>' + ms.map((m) => {
     let check = '<span class="check">not checked</span>';
     if (m.verify && m.verify.informative) {
       const e = m.verify.error;
@@ -541,7 +823,7 @@ function renderTrack(r) {
   const pr = scorecard.params(r.lat, r.lon);
   const pct = (v) => `${Math.round(v * 100)}%`;
   const enough = st.nHour >= 20;
-  $('sc-aside').textContent = st.n ? `${st.n} checks${st.days ? ` over ${st.days} day${st.days === 1 ? '' : 's'}` : ''}` : '';
+  $('sc-aside').textContent = st.n ? `${st.n} checks${st.days ? ` · ${st.days} day${st.days === 1 ? '' : 's'}` : ''}` : '';
   if (!enough) {
     $('sc-summary').textContent = st.n
       ? `Checking its own forecasts at this spot: ${st.n} checked so far. The track record appears after 20 checks of the next hour.`
@@ -581,8 +863,11 @@ function esc(s) {
 // ---------- radar map + animation ----------
 function renderMap(r, resetFrame) {
   if (!r.radar) {
-    $('frame-label').textContent = 'Radar unavailable';
+    const lbl = $('frame-label');
+    lbl.textContent = 'Radar unavailable';
+    lbl.dataset.kind = '';
     $('play-btn').disabled = true;
+    $('scrub-marks').innerHTML = '';
     return;
   }
   $('play-btn').disabled = false;
@@ -594,11 +879,19 @@ function renderMap(r, resetFrame) {
   state.framesMeta = frames;
   radarMap.setFrames(frames, rd.block, rd.cov, rd.w, rd.h, rd.probField);
   $('chance-note').textContent = rd.ai && rd.ai.trustHour > 0
-    ?'Chance of rain at each place at some point in the next hour, from the AI model trained on Indian radar, blended with the projected movement of the rain.'
+    ? 'Chance of rain at each place at some point in the next hour, from the AI model trained on Indian radar, blended with the projected movement of the rain.'
     : 'Chance of rain at each place at some point in the next hour, from the projected movement of the rain on radar.';
   const slider = $('frame-slider');
   slider.max = String(frames.length - 1);
-  if (resetFrame || state.frameIdx >= frames.length) state.frameIdx = rd.frames.length - 1;
+  // timeline: grey = observed radar, blue = forecast; marks at the oldest image, the latest, the end
+  const n = frames.length, nObs = rd.frames.length;
+  const pos = (k) => (n > 1 ? (k / (n - 1)) * 100 : 0);
+  slider.style.setProperty('--split', `${pos(nObs - 1).toFixed(1)}%`);
+  const f = state.fmt;
+  $('scrub-marks').innerHTML = `<span style="left:0">${f.time(frames[0].time)}</span>` +
+    `<span class="now" style="left:${pos(nObs - 1).toFixed(1)}%">Latest</span>` +
+    `<span style="left:100%">${f.time(frames[n - 1].time)}</span>`;
+  if (resetFrame || state.frameIdx >= frames.length) state.frameIdx = nObs - 1;
   if (state.mapMode === 'chance') setMapMode('chance');
   else showFrame(state.frameIdx);
   const m = rd.motion;
@@ -616,12 +909,14 @@ function showFrame(k) {
   const nObs = r.radar.frames.length;
   let label;
   if (fr.kind === 'obs') {
-    label = k === nObs - 1 ? `Latest · ${f.time(fr.time)}` : `${f.time(fr.time)} · ${Math.round((r.nowSec - fr.time) / 60)} min ago`;
+    label = k === nObs - 1 ? `Radar ${f.time(fr.time)} · latest` : `Radar ${f.time(fr.time)} · ${Math.round((r.nowSec - fr.time) / 60)} min ago`;
   } else {
     const ahead = Math.round((fr.time - r.nowSec) / 60);
-    label = `Forecast · ${f.time(fr.time)}${ahead > 0 ? ` (in ${ahead} min)` : ''}`;
+    label = `Forecast ${f.time(fr.time)}${ahead > 0 ? ` · in ${ahead} min` : ''}`;
   }
-  $('frame-label').textContent = label;
+  const lbl = $('frame-label');
+  lbl.textContent = label;
+  lbl.dataset.kind = fr.kind;
   $('frame-slider').value = String(k);
 }
 
@@ -629,6 +924,7 @@ function setMapMode(mode) {
   state.mapMode = mode;
   document.querySelectorAll('#map-mode button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === mode)));
   const chance = mode === 'chance';
+  $('map').classList.toggle('chance-mode', chance);
   $('radar-controls').hidden = chance;
   $('legend').hidden = chance;
   $('chance-legend').hidden = !chance;
@@ -636,7 +932,9 @@ function setMapMode(mode) {
     togglePlay(false);
     radarMap.showChance();
     const r = state.result;
-    $('frame-label').textContent = r && r.radar ? `Next hour from ${state.fmt.time(r.nowSec)}` : 'Radar unavailable';
+    const lbl = $('frame-label');
+    lbl.textContent = r && r.radar ? `Next hour from ${state.fmt.time(r.nowSec)}` : 'Radar unavailable';
+    lbl.dataset.kind = 'fc';
   } else if (state.result && state.result.radar) {
     showFrame(state.frameIdx);
   }
@@ -644,8 +942,9 @@ function setMapMode(mode) {
 
 function togglePlay(force) {
   state.playing = force ?? !state.playing;
-  $('play-btn').textContent = state.playing ? 'Pause' : 'Play';
-  $('play-btn').setAttribute('aria-label', state.playing ? 'Pause radar animation' : 'Play radar animation');
+  const btn = $('play-btn');
+  btn.setAttribute('aria-pressed', String(state.playing));
+  btn.setAttribute('aria-label', state.playing ? 'Pause radar animation' : 'Play radar animation');
   clearTimeout(state.playTimer);
   if (!state.playing) return;
   const step = () => {
@@ -671,7 +970,7 @@ function checkAlert() {
   if (state.alerted === key) return;
   state.alerted = key;
   const when = state.fmt.time(state.result.nowSec + s.startMin * 60);
-  const body = `Rain expected around ${when} (${s.startMin <= 2 ? 'now' : `in ${s.startMin} min`}) at ${state.name || 'your pin'}.`;
+  const body = `Rain expected around ${when} (${s.startMin <= 2 ? 'now' : `in ${s.startMin} min`}) at ${state.name || 'your location'}.`;
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
       if (navigator.serviceWorker && navigator.serviceWorker.controller) {
@@ -703,7 +1002,7 @@ function togglePanel(panelId, btnId) {
 function syncSettings() {
   document.querySelectorAll('#settings-panel .seg').forEach((seg) => {
     const k = seg.dataset.unit;
-    const val = k === 'theme' || k === 'alert' ? state.prefs[k] : state.units[k];
+    const val = k === 'alert' ? state.prefs[k] : state.units[k];
     seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === val)));
   });
 }
@@ -727,8 +1026,7 @@ function bindUI() {
       const b = e.target.closest('button');
       if (!b) return;
       const k = seg.dataset.unit;
-      if (k === 'theme') { state.prefs.theme = b.dataset.v; savePrefs(); applyTheme(); }
-      else if (k === 'alert') {
+      if (k === 'alert') {
         state.prefs.alert = b.dataset.v;
         savePrefs();
         if (b.dataset.v === 'on' && 'Notification' in window && Notification.permission === 'default') {
@@ -738,12 +1036,19 @@ function bindUI() {
       } else {
         state.units[k] = b.dataset.v;
         saveUnits(state.units);
+        clockKey = '';
+        tickClock();
         renderAll();
       }
       syncSettings();
     });
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanels(); });
+  document.addEventListener('pointerdown', (e) => {
+    // close a popover when tapping outside it
+    if (e.target.closest('.popover, #loc-btn, #settings-btn')) return;
+    if (!$('search-panel').hidden || !$('settings-panel').hidden) closePanels();
+  });
   const reset = $('sc-reset');
   let armed = false;
   reset.addEventListener('click', () => {
@@ -781,13 +1086,13 @@ function bindUI() {
 
   let rz = null;
   window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { redrawCharts(); radarMap.invalidate(); }, 120); });
-  if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener('change', () => { if (state.prefs.theme === 'system') applyTheme(); });
   window.addEventListener('hashchange', () => {
     const h = parseHash();
     if (h && (h.lat !== state.lat || h.lon !== state.lon)) setLocation(h.lat, h.lon, { source: 'link' });
   });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(false); });
   setInterval(() => { if (document.visibilityState === 'visible') refresh(false); }, 60 * 1000);
+  setInterval(() => { if (document.visibilityState === 'visible') tickClock(); }, 1000);
 }
 
 // ---------- start ----------
@@ -795,12 +1100,13 @@ function boot() {
   // used only if the worker is unavailable and the forecast runs on the main thread
   setRelayBase(location.origin);
   setRadarRelay(location.origin);
+  tickClock();
   if (typeof L === 'undefined') {
     $('title').textContent = 'The map failed to load';
     $('detail').textContent = 'Reload the page to try again.';
+    setLive('offline', 'Error');
     return;
   }
-  applyTheme();
   initMap();
   bindUI();
   syncSettings();

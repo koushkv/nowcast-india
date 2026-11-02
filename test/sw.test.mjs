@@ -9,11 +9,13 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
+const { vercelHeaders } = await import('./headers.mjs');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  for (const [k, v] of Object.entries(vercelHeaders(u.pathname))) res.setHeader(k, v);
   if (u.pathname.startsWith('/api/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end('{"relay":true}');
@@ -54,7 +56,7 @@ try {
   });
   assert.ok(!('nowcast-v5' in names), 'old app-shell cache removed');
   assert.deepEqual(names['nowcast-data-v1'], ['/keep'], 'forecast data cache kept');
-  const shell = names['nowcast-v6'] || [];
+  const shell = names['nowcast-v8'] || [];
   assert.ok(shell.includes('/index.html') && shell.includes('/js/ai.js'), 'app shell cached');
   assert.ok(!shell.some((p) => p.startsWith('/api/') || p.startsWith('/ai/')), `no live data in the shell cache: ${shell.filter((p) => /^\/(api|ai)\//.test(p))}`);
   console.log(`  ok  shell cached (${shell.length} files), relays and AI files not stored, data cache kept, old cache removed`);

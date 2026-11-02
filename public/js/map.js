@@ -1,9 +1,9 @@
-// Leaflet map: basemap, radar loop (observed + extrapolated frames), pin, range rings, storm track,
-// optional satellite infrared layer.
+// Leaflet map: black basemap, radar loop (observed + extrapolated frames), chance-of-rain field,
+// crosshair marker, range rings and the storm track.
 /* global L */
 
 
-// Radar colour stops (rain rate mm/h -> RGBA), tuned to read on both light and dark basemaps.
+// Radar colour stops (rain rate mm/h -> RGBA), tuned to read on the black basemap.
 const STOPS = [
   [0.1, [130, 205, 235, 0.30]],
   [0.3, [95, 195, 240, 0.62]],
@@ -30,15 +30,16 @@ const LUT = (() => {
   }
   return lut;
 })();
-// Chance-of-rain heat palette: pale yellow (unlikely) through orange and red to purple (near certain).
+// Chance-of-rain palette for a black map: brighter = more likely. Inferno-like (perceptually
+// uniform): deep purple for unlikely, through red and orange, to pale yellow for near certain.
 const PSTOPS = [
-  [0.05, [254, 240, 138, 0.0]],
-  [0.15, [253, 224, 71, 0.38]],
-  [0.3, [251, 146, 60, 0.55]],
-  [0.5, [239, 68, 68, 0.66]],
-  [0.7, [190, 18, 60, 0.68]],
-  [0.9, [126, 34, 206, 0.72]],
-  [1.0, [88, 28, 135, 0.75]],
+  [0.05, [60, 15, 110, 0.0]],
+  [0.15, [106, 23, 110, 0.5]],
+  [0.3, [160, 42, 99, 0.62]],
+  [0.5, [212, 72, 66, 0.72]],
+  [0.7, [245, 125, 21, 0.74]],
+  [0.9, [250, 193, 39, 0.76]],
+  [1.0, [252, 255, 164, 0.78]],
 ];
 const PLUT = (() => {
   const lut = new Uint8ClampedArray(256 * 4);
@@ -115,8 +116,8 @@ const FieldLayer = L.Layer.extend({
         const r0 = j * w, r1 = j1 * w;
         const o = (sy * W + sx) * 4;
         if (mask && !mask[Math.round(gy) * w + Math.round(gx)]) {
-          // outside radar coverage: light diagonal hatch in screen space
-          if ((sx + sy) % 9 === 0) { out[o] = 128; out[o + 1] = 136; out[o + 2] = 148; out[o + 3] = 90; }
+          // outside radar coverage: faint diagonal hatch in screen space
+          if ((sx + sy) % 9 === 0) { out[o] = 150; out[o + 1] = 150; out[o + 2] = 150; out[o + 3] = 70; }
           continue;
         }
         const v = (d[r0 + i] * (1 - fx) + d[r0 + i1] * fx) * (1 - fy) + (d[r1 + i] * (1 - fx) + d[r1 + i1] * fx) * fy;
@@ -134,23 +135,20 @@ export const RADAR_LEGEND = [
 ];
 
 function pinIcon() {
+  // crosshair marker: precise on top of radar colours, readable on a black map
   return L.divIcon({
     className: 'pw-pin',
-    html: `<svg viewBox="0 0 32 44" width="32" height="44" aria-hidden="true">
-      <path d="M16 1C8 1 2 7 2 15c0 10 14 27 14 27s14-17 14-27C30 7 24 1 16 1z" fill="var(--pin)" stroke="var(--pin-stroke)" stroke-width="2"/>
-      <circle cx="16" cy="15" r="5.5" fill="var(--pin-dot)"/></svg>`,
-    iconSize: [32, 44],
-    iconAnchor: [16, 42],
+    html: `<svg viewBox="0 0 40 40" width="40" height="40" aria-hidden="true">
+      <circle cx="20" cy="20" r="9" fill="rgba(0,0,0,.35)" stroke="#fff" stroke-width="2"/>
+      <circle cx="20" cy="20" r="2.6" fill="#fff"/>
+      <path d="M20 3v8M20 29v8M3 20h8M29 20h8" stroke="#fff" stroke-width="2" stroke-linecap="square"/></svg>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
   });
 }
-
-const SAT = (lon) => {
-  if (lon >= 58 && lon < 102) return { url: 'https://view.eumetsat.int/geoserver/wms', layers: 'msg_iodc:ir108', name: 'Meteosat IODC infrared (EUMETSAT)' };
-  if (lon >= -40 && lon < 58) return { url: 'https://view.eumetsat.int/geoserver/wms', layers: 'mtg_fd:ir105_hrfi', name: 'Meteosat MTG infrared (EUMETSAT)' };
-  if (lon >= 102 || lon < -165) return { url: 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi', layers: 'Himawari_AHI_Band13_Clean_Infrared', name: 'Himawari infrared (NASA GIBS)' };
-  if (lon < -105) return { url: 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi', layers: 'GOES-West_ABI_Band13_Clean_Infrared', name: 'GOES-West infrared (NASA GIBS)' };
-  return { url: 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi', layers: 'GOES-East_ABI_Band13_Clean_Infrared', name: 'GOES-East infrared (NASA GIBS)' };
-};
+function ringLabel(text) {
+  return L.divIcon({ className: 'pw-ring-label', html: text, iconSize: [48, 12], iconAnchor: [24, 14] });
+}
 
 export class RadarMap {
   constructor(el, { onPick, dark }) {
@@ -161,8 +159,7 @@ export class RadarMap {
       maxBounds: L.latLngBounds([0, 60], [42, 104]), maxBoundsViscosity: 0.9,
     });
     L.control.zoom({ position: 'bottomright' }).addTo(this.map);
-    this.map.createPane('sat');
-    this.map.getPane('sat').style.zIndex = 300;
+    L.control.scale({ position: 'bottomright', metric: true, imperial: false, maxWidth: 110 }).addTo(this.map);
     this.setTheme(dark);
     this.field = new FieldLayer().addTo(this.map);
     this.prepared = new Map();
@@ -170,7 +167,6 @@ export class RadarMap {
     this.rings = [];
     this.track = null;
     this.marker = null;
-    this.sat = null;
     this.map.on('click', (e) => this.onPick && this.onPick(e.latlng.lat, e.latlng.lng, 'map'));
   }
 
@@ -194,7 +190,6 @@ export class RadarMap {
       this.base.once('add', () => this.setTheme(dark));
       this.style = null;
     }
-    if (this.sat && this.sat.getContainer && this.sat.getContainer()) this.sat.getContainer().style.mixBlendMode = dark ? 'screen' : 'normal';
   }
 
   setView(lat, lon, zoom) {
@@ -212,9 +207,14 @@ export class RadarMap {
       this.marker.setLatLng([lat, lon]);
     }
     for (const r of this.rings) this.map.removeLayer(r);
-    this.rings = [10, 25, 50].map((km) => L.circle([lat, lon], {
-      radius: km * 1000, className: 'pw-ring', color: '#8894a3', weight: 1, dashArray: '3 5', fill: false, interactive: false,
-    }).addTo(this.map));
+    this.rings = [];
+    for (const km of [10, 25, 50]) {
+      this.rings.push(L.circle([lat, lon], {
+        radius: km * 1000, className: 'pw-ring', color: '#ffffff', opacity: 0.3, weight: 1, dashArray: '2 6', fill: false, interactive: false,
+      }).addTo(this.map));
+      // label on the ring's northern edge
+      this.rings.push(L.marker([lat + km / 111.32, lon], { icon: ringLabel(`${km} km`), interactive: false, keyboard: false }).addTo(this.map));
+    }
   }
 
   /** frames: [{time, rate (Float32 w*h), known?}], block: radar block, cov: Uint8 coverage */
@@ -331,24 +331,11 @@ export class RadarMap {
       const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
       pts.push([(p2 * 180) / Math.PI, (l2 * 180) / Math.PI]);
     }
-    const line = L.polyline(pts, { className: 'pw-track', color: '#e0a800', weight: 2.5, dashArray: '6 6', interactive: false });
+    const line = L.polyline(pts, { className: 'pw-track', color: '#f5b301', weight: 2, dashArray: '6 6', interactive: false });
     const ticks = pts.slice(1, -1).map((p, k) => L.circleMarker(p, {
-      radius: 2.5, className: 'pw-track-dot', color: '#e0a800', weight: 1, fillOpacity: 1, interactive: false,
+      radius: 2.5, className: 'pw-track-dot', color: '#f5b301', weight: 1, fillOpacity: 1, interactive: false,
     }).bindTooltip(`${(k + 1) * 10} min`, { permanent: false, direction: 'top' }));
     this.track = L.layerGroup([line, ...ticks]).addTo(this.map);
-  }
-
-  toggleSatellite(on, lon, dark) {
-    if (this.sat) { this.map.removeLayer(this.sat); this.sat = null; }
-    if (!on) return null;
-    const s = SAT(lon);
-    this.sat = L.tileLayer.wms(s.url, {
-      layers: s.layers, format: 'image/png', transparent: true, version: '1.3.0', opacity: dark ? 0.75 : 0.5,
-      pane: 'sat', attribution: s.name, tileSize: 512, zoomOffset: -1,
-    }).addTo(this.map);
-    const c = this.sat.getContainer();
-    if (c) c.style.mixBlendMode = dark ? 'screen' : 'normal';
-    return s;
   }
 
   invalidate() { this.map.invalidateSize(); }

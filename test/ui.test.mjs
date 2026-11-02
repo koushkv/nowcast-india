@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { makeScenario, openMeteoHandlers, encodePNG } from './synth.mjs';
+import { makeScenario, openMeteoHandlers, encodePNG, satHandlers } from './synth.mjs';
+import { vercelHeaders } from './headers.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -20,6 +21,7 @@ const relayHits = { om: 0, rv: 0 };
 let aiDir = null; // when set, /ai/* is served from here (a trained model) instead of public/ai
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url, 'http://x');
+  for (const [k, v] of Object.entries(vercelHeaders(reqUrl.pathname))) res.setHeader(k, v);
   // emulate this site's relays (api/om.js, api/rv.js) against the synthetic upstreams
   if (reqUrl.pathname === '/api/om') {
     relayHits.om++;
@@ -29,6 +31,17 @@ const server = http.createServer(async (req, res) => {
     const r = await om[upstream](`${upstream}?${reqUrl.searchParams.toString()}`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(await r.text());
+    return;
+  }
+  if (reqUrl.pathname === '/api/sat') {
+    // emulate api/sat.js: cloud tops near -30 °C over the rain to the west-southwest, clear elsewhere
+    const full = `http://site${req.url}`;
+    const hs = satHandlers({ base: 'http://site', nowSec, tempK: (lat, lon) => (Math.hypot(lat - (LAT - 0.1), lon - (LON - 0.35)) < 0.3 ? 243 : 296) });
+    const key = Object.keys(hs).find((k) => full.startsWith(k));
+    if (!key) { res.writeHead(404); res.end(); return; }
+    const r = await hs[key](full);
+    res.writeHead(r.status, { 'content-type': r.headers.get('content-type') });
+    res.end(Buffer.from(await r.arrayBuffer()));
     return;
   }
   if (reqUrl.pathname === '/api/rv') {
@@ -98,12 +111,13 @@ for (const cfg of [
   { name: 'phone-light', viewport: { width: 390, height: 844 }, colorScheme: 'light', isMobile: true, deviceScaleFactor: 2 },
   { name: 'desktop-dark', viewport: { width: 1440, height: 900 }, colorScheme: 'dark' },
   { name: 'desktop-light', viewport: { width: 1440, height: 900 }, colorScheme: 'light' },
+  { name: 'tablet', viewport: { width: 1024, height: 768 }, colorScheme: 'dark', isMobile: true, deviceScaleFactor: 2 },
 ]) {
   const ctx = await browser.newContext({ viewport: cfg.viewport, colorScheme: cfg.colorScheme, isMobile: cfg.isMobile, deviceScaleFactor: cfg.deviceScaleFactor || 1, timezoneId: 'Asia/Kolkata', locale: 'en-IN' });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error' && !/ERR_FAILED/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  page.on('console', (m) => { if ((m.type() === 'error' && !/ERR_FAILED/.test(m.text())) || /Content Security Policy/i.test(m.text())) errors.push(`console: ${m.text()}`); });
   page.on('requestfailed', (q) => { if (!q.url().includes('fonts.googleapis.com') && !q.url().includes('fonts.gstatic.com')) errors.push(`requestfailed: ${q.url().slice(0, 90)} (${q.failure() && q.failure().errorText})`); });
   await route(page);
   if (cfg.name.startsWith('desktop')) {
@@ -142,7 +156,18 @@ for (const cfg of [
     meta: document.getElementById('updated').textContent + ' | ' + document.getElementById('confidence').textContent,
     frame: document.getElementById('frame-label').textContent,
     loc: document.getElementById('loc-name').textContent,
-    slots: document.querySelectorAll('#strip .slot').length,
+    rows: document.querySelectorAll('#hours tr:not(.grp)').length,
+    clock: document.getElementById('clock').textContent,
+    live: document.getElementById('live').dataset.state,
+    statusbar: document.getElementById('sb-data').textContent,
+    readouts: [...document.querySelectorAll('.readout dd')].map((d) => d.textContent).join(' | '),
+    bg: getComputedStyle(document.body).backgroundColor,
+    mode: document.getElementById('mode-v').textContent,
+    why: [...document.querySelectorAll('#why-list li')].map((li) => li.textContent).join(' | '),
+    journey: document.querySelector('#journey svg') ? document.getElementById('journey-src').textContent : 'missing',
+    radarKv: document.getElementById('radar-kv').textContent,
+    storm: document.getElementById('storm-kv').textContent,
+    groups: [...document.querySelectorAll('#hours tr.grp')].map((g) => g.textContent).join(' | '),
     facts: document.querySelectorAll('#facts dt').length,
     track: document.getElementById('sc-summary').textContent,
     trackStats: document.getElementById('sc-stats').hidden ? 'hidden' : [document.getElementById('sc-acc').textContent, document.getElementById('sc-sr').textContent, document.getElementById('sc-pod').textContent].join(' / '),
@@ -172,6 +197,16 @@ for (const cfg of [
     await page.waitForTimeout(150);
     await page.locator('#map').screenshot({ path: path.join(outDir, `${cfg.name}-radar.png`) });
   }
+  if (info.rows !== 11) errors.push(`5-hour table has ${info.rows} rows`);
+  if (!/^\d{2}:\d{2}:\d{2}$/.test(info.clock)) errors.push(`clock not running: "${info.clock}"`);
+  if (info.bg !== 'rgb(0, 0, 0)') errors.push(`background is ${info.bg}, not black`);
+  if (!info.statusbar.includes('Radar') || !info.statusbar.includes('Models')) errors.push(`status bar incomplete: "${info.statusbar}"`);
+  if (info.live !== 'live') errors.push(`live indicator is "${info.live}"`);
+  if (info.mode !== 'Radar tracking') errors.push(`prediction mode is "${info.mode}"`);
+  if (info.journey !== 'Rain on its way') errors.push(`rain journey: "${info.journey}"`);
+  if (!/Sriharikota/.test(info.radarKv)) errors.push('nearest IMD radar missing');
+  if (!/Cloud development/.test(info.storm) || /Unavailable/.test(info.storm)) errors.push(`storm watch: "${info.storm.slice(0, 80)}"`);
+  if ((info.groups.match(/→/g) || []).length < 5) errors.push(`confidence groups: "${info.groups}"`);
   results.push({ cfg: cfg.name, ms, info, errors });
   await ctx.close();
 }

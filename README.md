@@ -7,7 +7,22 @@ A minute-level rain forecast for the next 5 hours, anywhere in India. It combine
 - **Ten weather models and about 140 ensemble runs.** ECMWF, UK Met Office, DWD ICON, NOAA GFS, Météo-France, Canada GEM, JMA and CMA, via Open-Meteo.
 - **Self-checking and local learning.** Every forecast is later checked against the radar at the pin. A per-location calibration learns from those checks, and the track record is shown in the app.
 
-The site is static (`public/`) plus two small relay functions (`api/`) on Vercel. The forecast and the AI run on the visitor's device, in a background thread.
+- **Explained, not just predicted.** Every forecast says *why*:
+  - the prediction mode: radar tracking (rain already on radar coming here, the most predictable case), convective development (storms likely to form where radar sees nothing yet), model-led, or settled;
+  - the evidence behind it, with each source tagged: where the rain is, its trend (strengthening or weakening over the last 30 minutes), its movement, the arrival window, how many weather models agree, satellite and thunderstorm potential;
+  - a **rain journey** diagram (where the rain is now, how fast it moves, when it reaches you, and which sources agree);
+  - confidence for each hour of the next five, falling with time.
+- **IMD radar network.** The nearest IMD Doppler radars, their distance and how high their beam passes over the location, combined into a radar confidence, with links to IMD's own images.
+- **Storm watch.** Meteosat-9 infrared (EUMETSAT) every 15 minutes: cloud tops that cool fast mark storms forming before radar sees rain. When that happens close by, with unstable air and nothing on radar, the near-term rain chance is raised.
+
+The site is static (`public/`) plus three small relay functions (`api/`) on Vercel. The forecast and the AI run on the visitor's device, in a background thread.
+
+### Data notes
+
+- **Radar** is IMD's Doppler radar network, through RainViewer's composite. IMD publishes its radars only as images, and its data feeds need an approved account, so the site links to IMD's images rather than reading them.
+- **Radar confidence** takes the weakest of coverage, image age and beam height. Puttaparthi is ~265 km from the nearest radar (Sriharikota), where the lowest beam passes ~6.5 km up and can miss shallow rain, so radar confidence there is low and the models get more weight.
+- **Satellite** temperatures come from EUMETSAT's rendered infrared images (a grey scale), so absolute cloud-top temperatures are approximate (about ±5 °C). Changes between images, which is what detects growing storms, are much more precise.
+- **Lightning:** there is no open real-time lightning feed for India. The site shows thunderstorm potential from the models and links to Blitzortung's live map (a volunteer network, not for safety decisions).
 
 ## How the forecast is made
 
@@ -62,7 +77,7 @@ python3 -m http.server 8080 --directory public
 ```
 
 ```bash
-node test/engine.test.mjs && node test/full.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs
+node test/engine.test.mjs && node test/full.test.mjs && node test/insight.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs
 ```
 
 ```bash
@@ -92,10 +107,15 @@ public/                  the website (deployed by Vercel)
   js/nwp.js              weather models, ensembles, live model checks
   js/blend.js            skill-based blending and the plain-language summary
   js/scorecard.js        forecast log, checks against radar, local learning
+  js/insight.js          prediction mode, radar trend, model agreement, hourly confidence, rain journey data
+  js/stations.js         IMD radar network, beam height, radar confidence
+  js/satellite.js        Meteosat infrared: cloud-top cooling and cold tops near the location
+  js/journey.js          the rain journey diagram (SVG)
   js/map.js, charts.js   map (smooth radar and chance-of-rain heatmap), next-hour chart
   js/worker.js           runs everything off the main thread, caching
   ai/                    model.json, model.bin, metrics.json (written by the nightly training)
 api/om.js, api/rv.js     caching relays for Open-Meteo and RainViewer
+api/sat.js               relay for Meteosat-9 infrared images (EUMETSAT WMS)
 backend/                 collector, model, trainer (Python)
 .github/workflows/       collection every 30 min, nightly training
 test/                    JavaScript and Python tests (synthetic storms with known answers)

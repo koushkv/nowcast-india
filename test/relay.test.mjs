@@ -1,7 +1,8 @@
-// Relay functions (api/om.js, api/rv.js) with a stubbed upstream.
+// Relay functions (api/om.js, api/rv.js, api/sat.js) with a stubbed upstream.
 import assert from 'node:assert/strict';
 import om from '../api/om.js';
 import rv from '../api/rv.js';
+import sat from '../api/sat.js';
 
 let failures = 0;
 const test = async (name, fn) => { try { await fn(); console.log(`  ok  ${name}`); } catch (e) { failures++; console.log(`  FAIL ${name}\n       ${e.stack || e}`); } };
@@ -18,6 +19,8 @@ globalThis.fetch = async (url) => {
   calls.push(String(url));
   if (String(url).includes('fail')) return new Response('{"error":true,"reason":"Daily API request limit exceeded"}', { status: 429 });
   if (String(url).endsWith('.png')) return new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { 'content-type': 'image/png' } });
+  if (String(url).includes('request=GetCapabilities')) return new Response('<Dimension name="time" default="2026-11-02T16:45:00Z" units="ISO8601">x</Dimension>', { status: 200, headers: { 'content-type': 'text/xml' } });
+  if (String(url).includes('request=GetMap')) return new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { 'content-type': 'image/png' } });
   return new Response('{"ok":1}', { status: 200, headers: { 'content-type': 'application/json' } });
 };
 
@@ -63,6 +66,32 @@ await test('radar relay allows only the index and RainViewer tile paths', async 
     const d = mockRes();
     await rv({ url: `/api/rv?p=${encodeURIComponent(evil)}` }, d);
     assert.equal(d.code, 400, evil);
+  }
+});
+await test('Satellite relay gives the newest image time and only small India boxes at 15-minute times', async () => {
+  const a = mockRes();
+  await sat({ url: '/api/sat?p=latest' }, a);
+  assert.equal(a.code, 200);
+  assert.deepEqual(JSON.parse(a.body), { latest: '2026-11-02T16:45:00Z' });
+  assert.match(a.headers['cache-control'], /s-maxage=120/);
+  const b = mockRes();
+  await sat({ url: '/api/sat?p=map&t=2026-11-02T16:30:00Z&b=13.5,77,15,78.5&s=48' }, b);
+  assert.equal(b.code, 200);
+  const last = calls.at(-1);
+  assert.ok(last.startsWith('https://view.eumetsat.int/geoserver/wms?') && last.includes('layers=msg_iodc:ir108') && last.includes('bbox=13.5,77,15,78.5') && last.includes('time=2026-11-02T16:30:00Z'), last);
+  assert.match(b.headers['cache-control'], /immutable/);
+  for (const q of [
+    'p=map&t=2026-11-02T16:31:00Z&b=13.5,77,15,78.5&s=48', // not a 15-minute image time
+    'p=map&t=2026-11-02T16:30:00Z&b=13.4,77,15,78.5&s=48', // off the 0.25° grid
+    'p=map&t=2026-11-02T16:30:00Z&b=40,10,42,12&s=48', // not India
+    'p=map&t=2026-11-02T16:30:00Z&b=10,70,20,80&s=48', // too large
+    'p=map&t=2026-11-02T16:30:00Z&b=13.5,77,15,78.5&s=4000', // too many pixels
+    'p=map&t=2099-01-01T00:00:00Z&b=13.5,77,15,78.5&s=48', // future
+    'p=other',
+  ]) {
+    const r = mockRes();
+    await sat({ url: `/api/sat?${q}` }, r);
+    assert.equal(r.code, 400, q);
   }
 });
 console.log(failures ? `\n${failures} test(s) failed` : '\nAll relay tests passed');

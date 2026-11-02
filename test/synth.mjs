@@ -280,3 +280,33 @@ export function openMeteoHandlers({ nowSec, rainFn, tz = 'Asia/Kolkata', tzAbbr 
     },
   };
 }
+
+// ---------- Synthetic satellite (Meteosat infrared via /api/sat) ----------
+/**
+ * Responds like api/sat.js. tempK(lat, lon, minutesBeforeLatest) gives the cloud-top/surface
+ * brightness temperature; it is turned into EUMETView's grey scale (see public/js/satellite.js).
+ */
+export function satHandlers({ base, nowSec, ageMin = 30, tempK }) {
+  const latest = Math.floor((nowSec - ageMin * 60) / 900) * 900;
+  const iso = (t) => new Date(t * 1000).toISOString().replace('.000Z', 'Z');
+  return {
+    [`${base}/api/sat?p=latest`]: () => new Response(JSON.stringify({ latest: iso(latest) }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    [`${base}/api/sat?p=map`]: (u) => {
+      const q = new URL(u).searchParams;
+      const t = Date.parse(q.get('t')) / 1000;
+      const [lat0, lon0, lat1, lon1] = q.get('b').split(',').map(Number);
+      const s = Number(q.get('s'));
+      const rgba = new Uint8Array(s * s * 4);
+      for (let y = 0; y < s; y++) {
+        for (let x = 0; x < s; x++) {
+          const lat = lat1 - ((y + 0.5) * (lat1 - lat0)) / s, lon = lon0 + ((x + 0.5) * (lon1 - lon0)) / s;
+          const g = Math.max(0, Math.min(255, Math.round((302 - tempK(lat, lon, (latest - t) / 60)) / 0.39)));
+          const i = (y * s + x) * 4;
+          rgba[i] = rgba[i + 1] = rgba[i + 2] = g;
+          rgba[i + 3] = 255;
+        }
+      }
+      return new Response(encodePNG(s, s, rgba), { status: 200, headers: { 'content-type': 'image/png' } });
+    },
+  };
+}

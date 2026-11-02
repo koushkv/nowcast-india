@@ -1,7 +1,7 @@
 // Units and local-time formatting.
 
 const KEY = 'nowcast.units.v1';
-const DEFAULTS = { temp: 'C', wind: 'kmh', rain: 'mm', dist: 'km' };
+const DEFAULTS = { temp: 'C', wind: 'kmh', rain: 'mm', dist: 'km', clock: '24' };
 
 export function loadUnits() {
   try {
@@ -11,7 +11,7 @@ export function loadUnits() {
   // sensible default for US users
   try {
     const loc = (navigator.language || '').toLowerCase();
-    if (loc === 'en-us' || loc.endsWith('-lr') || loc.endsWith('-mm')) return { temp: 'F', wind: 'mph', rain: 'in', dist: 'mi' };
+    if (loc === 'en-us' || loc.endsWith('-lr') || loc.endsWith('-mm')) return { ...DEFAULTS, temp: 'F', wind: 'mph', rain: 'in', dist: 'mi', clock: '12' };
   } catch { /* ignore */ }
   return { ...DEFAULTS };
 }
@@ -19,29 +19,31 @@ export function saveUnits(u) {
   try { localStorage.setItem(KEY, JSON.stringify(u)); } catch { /* ignore */ }
 }
 
+/** Time formatter in the forecast's time zone: 24-hour "21:05" or 12-hour "9:05 pm". */
+export function timeFormatter(clock, timeZone, withSeconds = false) {
+  const h12 = clock === '12';
+  const opts = { hour: h12 ? 'numeric' : '2-digit', minute: '2-digit', hourCycle: h12 ? 'h12' : 'h23' };
+  if (withSeconds) opts.second = '2-digit';
+  const locale = h12 ? 'en-IN' : 'en-GB';
+  try {
+    return new Intl.DateTimeFormat(locale, { ...opts, timeZone: timeZone || undefined });
+  } catch {
+    return new Intl.DateTimeFormat(locale, opts);
+  }
+}
+
 export function makeFormat(units, timeZone) {
-  const tz = timeZone || undefined;
-  let timeFmt;
-  try {
-    timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: tz });
-  } catch {
-    timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
-  }
-  let hourFmt;
-  try {
-    hourFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', timeZone: tz });
-  } catch {
-    hourFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric' });
-  }
+  const timeFmt = timeFormatter(units.clock, timeZone);
   const f = {
     units,
     time: (unixSec) => timeFmt.format(new Date(unixSec * 1000)),
-    hour: (unixSec) => hourFmt.format(new Date(unixSec * 1000)),
     temp: (c) => {
       if (!Number.isFinite(c)) return '–';
       return units.temp === 'F' ? `${Math.round((c * 9) / 5 + 32)}°` : `${Math.round(c)}°`;
     },
     tempUnit: () => (units.temp === 'F' ? '°F' : '°C'),
+    /** temperature without the degree sign, for readouts that show the unit separately */
+    tempNum: (c) => (Number.isFinite(c) ? String(Math.round(units.temp === 'F' ? (c * 9) / 5 + 32 : c)) : '–'),
     wind: (kmh) => {
       if (!Number.isFinite(kmh)) return '–';
       switch (units.wind) {

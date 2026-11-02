@@ -39,6 +39,8 @@ function policy(u) {
   if (u.includes('open-meteo.com') || u.includes('/api/om?')) return { ttl: 20 * 60 * 1000, persist: true };
   if (u.includes('weather-maps.json') || u.includes('p=index')) return { ttl: 50 * 1000, persist: false };
   if (u.includes('tilecache.rainviewer.com') || u.includes('/api/rv?p=v2')) return { ttl: 3 * 3600 * 1000, persist: true };
+  if (u.includes('/api/sat?p=latest')) return { ttl: 90 * 1000, persist: false };
+  if (u.includes('/api/sat?p=map')) return { ttl: 3 * 3600 * 1000, persist: true }; // a published image never changes
   return null;
 }
 async function store() {
@@ -109,7 +111,7 @@ function pack(r) {
     log: r.log, pinObs: r.pinObs,
     lat: r.lat, lon: r.lon, nowSec: r.nowSec, timeline: r.timeline, blended: r.blended, summary: r.summary,
     nc, ncQuality: r.ncQuality, radar, nwp: r.nwp, nwpSkill: r.nwpSkill, verification: r.verification,
-    models: r.models,
+    models: r.models, insight: r.insight,
     errors: r.errors.map(([k, e]) => [k, { message: e && e.message ? e.message : String(e) }]),
     timezone: r.timezone, utcOffset: r.utcOffset, tzAbbr: r.tzAbbr, elevation: r.elevation,
   };
@@ -121,7 +123,7 @@ self.onmessage = async (e) => {
   try {
     const aiNow = await getAI();
     const r = await runForecast({
-      lat, lon, calib, skill, ai: aiNow, fetchImpl: cachedFetch,
+      lat, lon, calib, skill, ai: aiNow, fetchImpl: cachedFetch, satBase: self.location.origin,
       onStage: (name, info) => self.postMessage({ id, type: 'stage', name, info }),
     });
     const { result, transfer } = pack(r);

@@ -3,126 +3,138 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Nowcast</title>
-<meta name="description" content="Rain forecast for the next 5 hours anywhere in India: live IMD radar via RainViewer, an AI model trained on Indian radar, and ten weather models.">
-<meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
+<title>Nowcast · Rain forecast for India</title>
+<meta name="description" content="Minute-by-minute rain forecast for the next 5 hours anywhere in India: live IMD radar via RainViewer, an AI model trained on Indian radar, and ten weather models.">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Nowcast">
+<link rel="canonical" href="https://weather.koushikv.site/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Nowcast">
+<meta property="og:title" content="Nowcast · Rain forecast for India">
+<meta property="og:description" content="Rain in the next 5 hours, minute by minute: live radar, an AI model trained on Indian radar and ten weather models, for any spot in India.">
+<meta property="og:url" content="https://weather.koushikv.site/">
+<meta property="og:image" content="https://weather.koushikv.site/icons/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Nowcast: rain in the next 5 hours, minute by minute">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/geist-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<header class="top">
-  <div class="top-inner">
-    <button id="loc-btn" class="place" type="button" aria-controls="search-panel" aria-expanded="false">
-      <svg class="pin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z" fill="currentColor"/></svg>
-      <span class="place-text">
-        <span id="loc-name">Choose a location</span>
-        <span id="loc-sub" class="sub">Tap to search</span>
-      </span>
-      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
+<a class="skip" href="#readout">Skip to the forecast</a>
+
+<header class="bar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".45"/><circle cx="12" cy="12" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".45"/><path d="M12 12 L19.8 6.4 A10 10 0 0 0 12 2 Z" fill="var(--accent)"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/></svg>
+    <span class="wordmark">Nowcast</span>
+    <span class="region">IN</span>
+  </div>
+  <button id="loc-btn" class="station" type="button" aria-controls="search-panel" aria-expanded="false" aria-label="Change location">
+    <span class="station-name"><span id="loc-name">Choose a location</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    <span id="loc-sub" class="station-coords">Search or tap the map</span>
+  </button>
+  <div class="bar-end">
+    <div class="clock" aria-hidden="true"><span id="clock">--:--:--</span><span id="clock-tz">IST</span></div>
+    <span id="live" class="live" data-state="loading"><i aria-hidden="true"></i><span id="live-text">Loading</span></span>
     <button id="gps-btn" class="icon-btn" type="button" aria-label="Use my location" title="Use my location">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg>
     </button>
     <button id="refresh-btn" class="icon-btn" type="button" aria-label="Refresh" title="Refresh">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
     </button>
     <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings" title="Settings" aria-controls="settings-panel" aria-expanded="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
     </button>
   </div>
 </header>
 
-<div id="search-panel" class="sheet" hidden>
-  <div class="sheet-inner">
-    <form id="search-form" class="search-row" role="search">
-      <input id="search-input" type="search" placeholder="Search for a town in India" autocomplete="off" aria-label="Search for a place">
-      <button class="btn primary" type="submit">Search</button>
-    </form>
-    <ul id="search-results" class="results"></ul>
-    <p class="hint">Or tap anywhere on the map below, or drag the pin.</p>
-    <div><button class="btn" type="button" id="search-close">Close</button></div>
-  </div>
+<div id="search-panel" class="popover search-pop" hidden>
+  <form id="search-form" class="search-row" role="search">
+    <input id="search-input" type="search" placeholder="Search a town or city in India" autocomplete="off" aria-label="Search for a place">
+    <button class="btn primary" type="submit">Search</button>
+  </form>
+  <ul id="search-results" class="results"></ul>
+  <p class="hint">You can also tap anywhere on the map, or drag the marker.</p>
+  <div class="pop-foot"><button class="btn" type="button" id="search-close">Close</button></div>
 </div>
 
-<div id="settings-panel" class="sheet" hidden>
-  <div class="sheet-inner">
-    <div class="setting"><span>Temperature</span><div class="seg" data-unit="temp"><button type="button" data-v="C">°C</button><button type="button" data-v="F">°F</button></div></div>
-    <div class="setting"><span>Wind</span><div class="seg" data-unit="wind"><button type="button" data-v="kmh">km/h</button><button type="button" data-v="mph">mph</button><button type="button" data-v="ms">m/s</button><button type="button" data-v="kn">knots</button></div></div>
-    <div class="setting"><span>Rain</span><div class="seg" data-unit="rain"><button type="button" data-v="mm">mm</button><button type="button" data-v="in">inches</button></div></div>
-    <div class="setting"><span>Distance</span><div class="seg" data-unit="dist"><button type="button" data-v="km">km</button><button type="button" data-v="mi">miles</button></div></div>
-    <div class="setting"><span>Appearance</span><div class="seg" data-unit="theme"><button type="button" data-v="system">Auto</button><button type="button" data-v="light">Light</button><button type="button" data-v="dark">Dark</button></div></div>
-    <div class="setting"><span>Rain alert</span><div class="seg" data-unit="alert"><button type="button" data-v="off">Off</button><button type="button" data-v="on">On</button></div></div>
-    <p class="hint">With the rain alert on, you get a notification when rain is likely within 20 minutes, while this page is open or installed on your home screen.</p>
-    <div><button class="btn" type="button" id="settings-close">Done</button></div>
-  </div>
+<div id="settings-panel" class="popover settings-pop" hidden>
+  <h2 class="pop-title">Settings</h2>
+  <div class="setting"><span>Temperature</span><div class="seg" data-unit="temp"><button type="button" data-v="C">°C</button><button type="button" data-v="F">°F</button></div></div>
+  <div class="setting"><span>Wind</span><div class="seg" data-unit="wind"><button type="button" data-v="kmh">km/h</button><button type="button" data-v="ms">m/s</button><button type="button" data-v="kn">kn</button><button type="button" data-v="mph">mph</button></div></div>
+  <div class="setting"><span>Rain</span><div class="seg" data-unit="rain"><button type="button" data-v="mm">mm</button><button type="button" data-v="in">in</button></div></div>
+  <div class="setting"><span>Distance</span><div class="seg" data-unit="dist"><button type="button" data-v="km">km</button><button type="button" data-v="mi">mi</button></div></div>
+  <div class="setting"><span>Clock</span><div class="seg" data-unit="clock"><button type="button" data-v="24">24 h</button><button type="button" data-v="12">12 h</button></div></div>
+  <div class="setting"><span>Rain alert</span><div class="seg" data-unit="alert"><button type="button" data-v="off">Off</button><button type="button" data-v="on">On</button></div></div>
+  <p class="hint">With the rain alert on, you get a notification when rain is likely within 20 minutes, while this page is open or installed on your home screen.</p>
+  <div class="pop-foot"><button class="btn" type="button" id="settings-close">Done</button></div>
 </div>
 
-<main class="page">
-  <div class="col-main">
-    <section class="card summary" aria-labelledby="title">
-      <p id="status" class="status" data-state="loading"><span class="dot"></span><span id="status-text">Updating</span></p>
+<main class="console">
+  <section class="panel now" id="readout" aria-labelledby="title" tabindex="-1">
+    <div class="head"><h2>Forecast</h2><span id="confidence" class="chip"></span></div>
+    <div class="lead">
+      <p id="status" class="status" data-state="loading"><i class="dot" aria-hidden="true"></i><span id="status-text">Updating</span></p>
       <h1 id="title" aria-live="polite">Checking the radar…</h1>
       <p id="detail" class="detail">Getting live radar and the latest weather models for this spot.</p>
       <p id="approach" class="approach" hidden></p>
-      <div class="stats">
-        <div class="stat"><span class="label">Now</span><span id="s-temp" class="value">–</span><span id="s-feels" class="small"></span></div>
-        <div class="stat"><span class="label">Chance of rain, next hour</span><span id="s-hour" class="value">–</span></div>
-        <div class="stat"><span class="label">Rain, next 5 hours</span><span id="s-total" class="value">–</span></div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div class="mode" id="mode" hidden>
+        <span class="mode-k">Prediction mode</span><span class="mode-v" id="mode-v"></span>
+        <p class="mode-d" id="mode-d"></p>
       </div>
-      <p id="notice" class="notice" hidden></p>
-      <p class="meta"><span id="updated"></span><span id="confidence"></span></p>
-    </section>
+    </div>
 
-    <section class="card" aria-labelledby="nh-h">
-      <div class="card-head"><h2 id="nh-h">Next hour</h2><span id="nh-readout" class="aside"></span></div>
-      <canvas id="nexthour-canvas" role="img" aria-label="Chance of rain for each 5 minutes of the next hour"></canvas>
-      <div class="key">
-        <span><i style="background:var(--rain-1)"></i>Light</span>
-        <span><i style="background:var(--rain-2)"></i>Moderate</span>
-        <span><i style="background:var(--rain-3)"></i>Heavy</span>
-        <span><i style="background:var(--rain-4)"></i>Very heavy</span>
-        <span class="muted">Bar height = chance of rain</span>
+    <div class="head"><h2 id="why-h">Why</h2><span class="src" id="why-src"></span></div>
+    <div class="why" aria-labelledby="why-h">
+      <p class="why-top" id="why-top"><span class="muted">Waiting for the forecast…</span></p>
+      <ul class="why-list" id="why-list"></ul>
+    </div>
+
+    <div class="head"><h2 id="journey-h">Rain journey</h2><span class="src" id="journey-src"></span></div>
+    <div class="journey" id="journey" aria-labelledby="journey-h"></div>
+
+    <div class="head"><h2>Rain</h2><span class="src">Radar + models</span></div>
+    <dl class="readout">
+      <div><dt>Now</dt><dd id="r-now">—</dd></div>
+      <div><dt>Chance · 60 min</dt><dd id="s-hour">—</dd></div>
+      <div><dt id="r-start-label">Starts</dt><dd id="r-start">—</dd></div>
+      <div><dt>Peak</dt><dd id="r-peak">—</dd></div>
+      <div><dt>Total · 5 h</dt><dd id="s-total">—</dd></div>
+      <div><dt>Thunder</dt><dd id="r-thunder">—</dd></div>
+    </dl>
+
+    <p class="meta" id="updated"></p>
+  </section>
+
+  <section class="panel mapwrap" aria-label="Radar map">
+    <div id="map" class="map" role="application" aria-label="Map. Tap or click to move the forecast marker."></div>
+    <div class="map-top">
+      <div class="seg dark" id="map-mode" role="group" aria-label="Map layer">
+        <button type="button" data-v="radar" aria-pressed="true">Radar</button>
+        <button type="button" data-v="chance" aria-pressed="false">Rain chance · 1 h</button>
       </div>
-    </section>
-
-    <section class="card" aria-labelledby="st-h">
-      <div class="card-head"><h2 id="st-h">Next 5 hours</h2><span class="aside">every 30 minutes</span></div>
-      <div class="strip-wrap"><ol id="strip" class="strip"></ol></div>
-    </section>
-
-    <section class="card track" aria-labelledby="sc-h">
-      <div class="card-head"><h2 id="sc-h">How accurate it has been here</h2><span id="sc-aside" class="aside"></span></div>
-      <p id="sc-summary" class="sc-summary">Each forecast is checked later against what the radar actually saw here.</p>
-      <div class="stats" id="sc-stats" hidden>
-        <div class="stat"><span class="label">Right, next hour</span><span id="sc-acc" class="value">–</span></div>
-        <div class="stat"><span class="label">Rain alerts that came true</span><span id="sc-sr" class="value">–</span></div>
-        <div class="stat"><span class="label">Rain caught in advance</span><span id="sc-pod" class="value">–</span></div>
-      </div>
-      <div id="sc-leads" class="sc-leads"></div>
-      <p id="sc-learn" class="hint"></p>
-      <p class="hint">Checks use the radar at your pin and stay on this device. <button id="sc-reset" class="linkbtn" type="button">Clear history for this spot</button></p>
-    </section>
-  </div>
-
-  <div class="col-side">
-    <section class="card mapcard" aria-labelledby="map-h">
-      <div class="card-head">
-        <div class="seg" id="map-mode" role="group" aria-label="Map layer">
-          <button type="button" data-v="radar" aria-pressed="true">Radar</button>
-          <button type="button" data-v="chance" aria-pressed="false">Rain chance, next hour</button>
-        </div>
-        <span id="frame-label" class="aside"></span>
-      </div>
-      <div id="map" class="map" aria-label="Map. Tap to move the forecast pin."></div>
+      <span id="frame-label" class="frame-label" aria-live="off"></span>
+    </div>
+    <div class="map-dock">
       <div class="map-controls" id="radar-controls">
-        <button id="play-btn" class="btn" type="button" aria-label="Play radar animation">Play</button>
-        <input id="frame-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar time">
+        <button id="play-btn" class="play" type="button" aria-label="Play radar animation">
+          <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+          <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" fill="currentColor"/></svg>
+        </button>
+        <div class="scrub">
+          <input id="frame-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar time">
+          <div class="scrub-marks" id="scrub-marks" aria-hidden="true"></div>
+        </div>
       </div>
       <div class="key" id="legend"></div>
       <div class="chance-key" id="chance-legend" hidden>
@@ -130,20 +142,87 @@
         <div class="chance-ticks"><span>10%</span><span>30%</span><span>50%</span><span>70%</span><span>90%</span></div>
         <p class="hint" id="chance-note">Chance of rain at each place at some point in the next hour, from the projected movement of the rain on radar.</p>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <details class="card about" id="about">
-      <summary><span>About this forecast</span></summary>
+  <section class="panel timeline" aria-label="Forecast timeline">
+    <div class="block">
+      <div class="head"><h2 id="nh-h">Next 60 min</h2><span id="nh-readout" class="aside"></span></div>
+      <canvas id="nexthour-canvas" role="img" aria-label="Chance of rain for each 5 minutes of the next hour"></canvas>
+      <div class="key compact">
+        <span><i style="background:var(--rain-1)"></i>Light</span>
+        <span><i style="background:var(--rain-2)"></i>Moderate</span>
+        <span><i style="background:var(--rain-3)"></i>Heavy</span>
+        <span><i style="background:var(--rain-4)"></i>Very heavy</span>
+        <span class="muted">Height = chance</span>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="head"><h2 id="st-h">Next 5 hours</h2><span class="aside">Confidence falls with time</span></div>
+      <div class="table-wrap">
+        <table class="hours" aria-labelledby="st-h">
+          <thead><tr><th scope="col">Time</th><th scope="col">Rain</th><th scope="col">Chance</th><th scope="col" class="num">Temp</th><th scope="col" class="num">Wind</th></tr></thead>
+          <tbody id="hours"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="block" aria-labelledby="rd-h">
+      <div class="head"><h2 id="rd-h">Radar · IMD network</h2><span class="chip" id="rc-chip"></span></div>
+      <dl class="kv" id="radar-kv"></dl>
+      <p class="hint pad" id="radar-note"></p>
+    </div>
+
+    <div class="block" aria-labelledby="sw-h">
+      <div class="head"><h2 id="sw-h">Storm watch</h2><span class="chip" id="sw-chip"></span></div>
+      <dl class="kv" id="storm-kv"></dl>
+      <p class="hint pad" id="storm-note"></p>
+    </div>
+
+    <div class="block" aria-labelledby="cd-h">
+      <div class="head"><h2 id="cd-h">Conditions</h2><span class="src">Model consensus</span></div>
+      <dl class="readout">
+        <div><dt>Temperature</dt><dd id="s-temp">—</dd></div>
+        <div><dt>Feels like</dt><dd id="s-feels">—</dd></div>
+        <div><dt>Humidity</dt><dd id="c-rh">—</dd></div>
+        <div><dt>Cloud cover</dt><dd id="c-cloud">—</dd></div>
+        <div><dt>Wind</dt><dd id="c-wind">—</dd></div>
+        <div><dt>Gusts</dt><dd id="c-gust">—</dd></div>
+      </dl>
+    </div>
+
+    <div class="block track" aria-labelledby="sc-h">
+      <div class="head"><h2 id="sc-h">Verification · this spot</h2><span id="sc-aside" class="aside"></span></div>
+      <p id="sc-summary" class="sc-summary">Each forecast is checked later against what the radar actually saw here.</p>
+      <dl class="readout three" id="sc-stats" hidden>
+        <div><dt>Right · 60 min</dt><dd id="sc-acc">—</dd></div>
+        <div><dt>Alerts true</dt><dd id="sc-sr">—</dd></div>
+        <div><dt>Rain caught</dt><dd id="sc-pod">—</dd></div>
+      </dl>
+      <div id="sc-leads" class="sc-leads"></div>
+      <p id="sc-learn" class="hint"></p>
+      <p class="hint">Checks use the radar at this spot and stay on this device. <button id="sc-reset" class="linkbtn" type="button">Clear history for this spot</button></p>
+    </div>
+
+    <details class="block about" id="about">
+      <summary><span>Sources &amp; method</span></summary>
       <dl class="facts" id="facts"></dl>
       <div class="models" id="models"></div>
-      <p class="method">For the first one to three hours, the rain already on radar is moved along its measured path, with a range of possible paths to show the uncertainty. Weather models take over gradually as that projection loses accuracy. How fast that happens depends on how quickly the rain near you is changing right now, and models that matched the radar over the past hours count for more.</p>
+      <p class="method">For the first one to three hours, the rain already on radar is moved along its measured path, with a range of possible paths to show the uncertainty. An AI model trained on Indian radar adds its own prediction once it has proven itself. Weather models take over gradually as the radar projection loses accuracy; models that matched the radar recently count for more. A forecast gives probabilities, not certainties: for warnings, follow the India Meteorological Department.</p>
     </details>
-  </div>
+  </section>
 </main>
 
-<footer class="foot">
-  <p>Radar: <a href="https://www.rainviewer.com" rel="noopener" target="_blank">RainViewer</a> (national weather services). Weather models: <a href="https://open-meteo.com" rel="noopener" target="_blank">Open-Meteo</a> (ECMWF, DWD, NOAA, UK Met Office, Météo-France, ECCC, JMA, CMA and others). Map © OpenStreetMap contributors.</p>
-  <p>Rain forecast for India. A forecast gives probabilities, not certainties. For severe weather, follow the India Meteorological Department (IMD).</p>
+<footer class="statusbar">
+  <div class="sb-data" id="sb-data"><span>Starting…</span></div>
+  <div class="sb-credits">
+    <a href="https://www.rainviewer.com" rel="noopener" target="_blank">RainViewer</a>
+    <a href="https://open-meteo.com" rel="noopener" target="_blank">Open-Meteo</a>
+    <a href="https://view.eumetsat.int" rel="noopener" target="_blank">EUMETSAT</a>
+    <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">© OpenStreetMap</a>
+    <a href="https://mausam.imd.gov.in" rel="noopener" target="_blank">IMD warnings</a>
+  </div>
 </footer>
 
 <script src="vendor/leaflet/leaflet.js"></script>

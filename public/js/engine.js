@@ -13,6 +13,9 @@ import {
 import { blend, summarize, briefing, makeTimeline, THRESHOLDS } from './blend.js';
 import { clamp, haversineKm, vectorToBearing, RAIN } from './util.js';
 import { covers as aiCovers, runModel, sampleAt, trustWeights } from './ai.js';
+import { nearestRadars, radarConfidence } from './stations.js';
+import { fetchSatellite } from './satellite.js';
+import { radarTrend, modelAgreement, thunderPotential, predictionMode, hourConfidence, journeyData, advectToNow } from './insight.js';
 
 const R1F = 2; // R1 = native radar grid downsampled by 2 (~2.4 km)
 // timeline steps (5 min each) logged for later verification: 0–60 min densely, then sparser to 5 h
@@ -122,6 +125,14 @@ export async function runForecast(o) {
   const detP = fetchDeterministic(lat, lon, models, fetchImpl);
   const ringP = detP.then((d) => fetchRing(lat, lon, d.ids, fetchImpl)).catch((e) => { errors.push(['ring', e]); return null; });
   const ensP = fetchEnsemble(lat, lon, fetchImpl).catch((e) => { errors.push(['ensemble', e]); return null; });
+  // satellite (storm clouds forming), through this site's relay; never delays the forecast much
+  const satP = o.satBase
+    ? Promise.race([
+      fetchSatellite(lat, lon, { base: o.satBase, fetchImpl, nowSec }),
+      new Promise((r) => setTimeout(() => r({ ok: false, reason: 'satellite timed out' }), 9000)),
+    ])
+    : Promise.resolve(null);
+  const radars = nearestRadars(lat, lon, 3);
   stage('radar', { state: 'loading', progress: 0 });
   const radarP = loadRadar(lat, lon, {
     count: 10, fetchImpl, onProgress: (f) => stage('radar', { state: 'loading', progress: f }),
@@ -137,7 +148,7 @@ export async function runForecast(o) {
 
   // --- radar processing ---
   const radar = await radarP;
-  let nc = null, motion = null, R1 = null, frames = null, ncQuality = 0, radarInfo = null, aiInfo = null, aiNote = null;
+  let nc = null, motion = null, R1 = null, frames = null, ncQuality = 0, radarInfo = null, aiInfo = null, aiNote = null, trend = null;
   if (radar && radar.frames.length >= 3) {
     stage('radar', { state: 'processing' });
     const { block } = radar;
@@ -192,7 +203,20 @@ export async function runForecast(o) {
     const age = nc.ageMin;
     const qAge = age <= 15 ? 1 : age <= 45 ? 1 - (0.7 * (age - 15)) / 30 : age <= 75 ? 0.3 * (1 - (age - 45) / 30) : 0;
     const qCov = clamp(nc.now.covFracNear / 0.7, 0, 1);
-    ncQuality = qAge * qCov * (stale ? 0.3 : 1);
+    // far from the nearest radar the beam passes kilometres up and misses shallow rain
+    const beam = radars.length ? radars[0].beamKm : 3;
+    const qBeam = clamp(1 - 0.06 * Math.max(0, beam - 3), 0.7, 1);
+    ncQuality = qAge * qCov * qBeam * (stale ? 0.3 : 1);
+    // is the rain that matters here growing or fading?
+    const tgt = nc.approach || (nc.nearest && nc.nearest.distKm <= 150 ? nc.nearest : null);
+    if (tgt) {
+      try {
+        trend = radarTrend({
+          rates: R1.map((r) => r.rate), times: radar.frames.map((f) => f.time), cov: R1[R1.length - 1].cov,
+          w, h, kmPerPx, motion, x: tgt.x, y: tgt.y,
+        });
+      } catch (e) { errors.push(['trend', e]); }
+    }
     radarInfo = {
       block, kmPerPx, pin, w, h, stale, steer,
       pinObs: stale ? [] : radar.frames.map((f, k) => {
@@ -283,6 +307,23 @@ export async function runForecast(o) {
     thunderNwp: nwp ? (i) => thunderFraction(nwp, i) : null,
     capeAt: nwp ? (i) => pinVariable(nwp, 'cape', i).mean : null,
   });
+  // Radar cannot see a storm before it rains. When satellite shows cloud tops climbing fast nearby,
+  // the models support storms, and the radar shows nothing close, raise the near-term chance a little
+  // (logged and checked against the radar like every forecast, so the calibration can correct it).
+  const sat = await satP;
+  const capeNow = nwp ? Math.max(...[0, 6, 12, 18, 24].map((i) => pinVariable(nwp, 'cape', i).mean).filter(Number.isFinite), 0) : 0;
+  const thunderNear = nwp ? Math.max(...[0, 6, 12, 18, 24].map((i) => thunderFraction(nwp, i))) : 0;
+  const radarClear = nc && (!nc.nearest || nc.nearest.distKm > 25) && !nc.approach;
+  if (sat && sat.ok && radarClear && sat.where && sat.where.distKm <= 40 && (sat.trend === 'rapid' || sat.trend === 'developing') &&
+      (capeNow >= 800 || thunderNear >= 0.15)) {
+    const floor = sat.trend === 'rapid' ? 0.35 : 0.22;
+    for (let i = 0; i < blended.prob[0].length; i++) {
+      const m = i * 5;
+      const f = m < 15 ? (m / 15) : m <= 60 ? 1 : m <= 90 ? 1 - ((m - 60) / 30) * 0.5 : 0;
+      if (f > 0) blended.prob[0][i] = Math.max(blended.prob[0][i], floor * f);
+    }
+    blended.satBoost = { floor, trend: sat.trend };
+  }
   const summary = summarize(blended, nc, nowSec);
   const num = (v) => (Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null);
   const log = {
@@ -297,7 +338,27 @@ export async function runForecast(o) {
       mp: nwpP.perModel ? Object.fromEntries(Object.entries(nwpP.perModel).map(([id, a]) => [id, num(a[i])])) : {},
     })),
   };
+  // ---- explanations: radar picture, situation, model agreement, per-hour confidence, rain journey ----
+  const radarConf = radarConfidence({
+    available: !!radarInfo, coverageNear: radarInfo ? radarInfo.coverageNear : 0,
+    ageMin: radarInfo ? radarInfo.ageMin : Infinity, stale: radarInfo ? radarInfo.stale : false,
+    beamKm: radars.length ? radars[0].beamKm : NaN,
+  });
+  const agreement = modelAgreement(nwp, timeline, nowSec);
+  const thunder = thunderPotential(nwp, summary);
+  const mode = predictionMode({ summary, nc, radarConf, sat, thunder, models: agreement });
+  const insight = {
+    radars, radarConf, trend, sat, models: agreement, thunder, mode,
+    hours: hourConfidence({ blended, nwp, nwpP: det ? nwpP : null, ncQuality }),
+    journey: journeyData({
+      summary, nc, mode, trend, blended, sat, models: agreement, ai: aiInfo,
+      motion: radarInfo ? radarInfo.motion : null,
+    }),
+    boost: blended.satBoost || null,
+    nearestNow: nc && nc.nearest ? { ...advectToNow(nc.nearest, radarInfo && radarInfo.motion, nc.ageMin), rate: nc.nearest.rate } : null,
+  };
   return {
+    insight,
     log, pinObs: radarInfo ? radarInfo.pinObs : [],
     lat, lon, nowSec, timeline, blended, summary, nc, ncQuality, radar: radarInfo,
     nwp, nwpP, nwpSkill, verification, models, errors,
