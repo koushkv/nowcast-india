@@ -1,0 +1,7 @@
+node_modules/
+data/
+test/shots/
+test/tmp-*/
+__pycache__/
+*.pyc
+*.zip

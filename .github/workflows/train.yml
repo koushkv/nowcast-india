@@ -1,0 +1,54 @@
+# Nightly: train the India nowcast model on the collected radar, test it on the newest day it has
+# not seen, and publish it to public/ai/ only if it beats the live model. The commit triggers a
+# Vercel deployment when the repository is connected to the Vercel project.
+name: Train India nowcast model
+
+on:
+  schedule:
+    - cron: "40 20 * * *" # 02:10 IST
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Training time budget (minutes)"
+        default: "60"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -r backend/requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Train and test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python backend/train.py --release radar-data --dir data --out public/ai --minutes "${{ github.event.inputs.minutes || '60' }}"
+      - name: Publish model
+        run: |
+          if [ -z "$(git status --porcelain public/ai)" ]; then
+            echo "No change to publish"; exit 0
+          fi
+          branch="${GITHUB_REF_NAME}"
+          git fetch origin "$branch"
+          if ! git diff --quiet HEAD "origin/$branch" -- public/ai; then
+            echo "public/ai changed on $branch while training; leaving it as it is"; exit 0
+          fi
+          git config user.name "nowcast-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/ai
+          git commit -m "AI nowcast: nightly model update"
+          git pull --rebase origin "$branch"
+          git push origin "HEAD:$branch"
