@@ -405,6 +405,25 @@ button { cursor: pointer; }
 .model-row .check.poor { color: var(--alert); }
 .method { margin: 0; padding: 14px var(--pad) 18px; font-size: 13px; line-height: 1.55; color: var(--muted); }
 
+/* ---------- official warnings (NDMA SACHET) ---------- */
+.alerts { border-bottom: 1px solid var(--line); }
+.alert { --sev: var(--warn); padding: 12px var(--pad) 13px; border-left: 3px solid var(--sev); background: linear-gradient(90deg, color-mix(in srgb, var(--sev) 10%, transparent), transparent 70%); }
+.alert + .alert { border-top: 1px solid var(--line); }
+.alert[data-sev="Extreme"] { --sev: var(--danger); }
+.alert[data-sev="Severe"] { --sev: var(--alert); }
+.alert[data-sev="Moderate"] { --sev: var(--warn); }
+.alert[data-sev="Minor"] { --sev: var(--muted); }
+.alert-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; font: 600 10.5px/1.3 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--sev); }
+.alert-top .until { color: var(--ink-2); font-weight: 500; letter-spacing: 0.04em; white-space: nowrap; }
+.alert-h { margin: 6px 0 0; font-size: 14px; line-height: 1.45; color: var(--ink); }
+.alert-meta { margin: 6px 0 0; font: 400 11px/1.4 var(--mono); color: var(--muted); }
+.alert-local { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.alert-local summary { cursor: pointer; font: 500 11px/1.4 var(--mono); color: var(--muted); }
+.alerts-none { padding: 9px var(--pad) 10px; font: 400 11.5px/1.45 var(--mono); color: var(--muted); }
+.alerts-none summary { cursor: pointer; }
+.alerts-none ul { margin: 8px 0 0; padding: 0 0 0 16px; color: var(--ink-2); }
+.alerts-none li { margin: 3px 0; }
+
 /* ---------- prediction mode, why, rain journey ---------- */
 .mode {
   display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 10px;

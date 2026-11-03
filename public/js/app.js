@@ -9,6 +9,7 @@ import { setRadarRelay } from './radar.js';
 import { Scorecard } from './scorecard.js';
 import { loadModel } from './ai.js';
 import { journeyHTML } from './journey.js';
+import { matchAlerts, isStormAlert, isRainAlert, languageName, issuerName, areaLabel } from './alerts.js';
 
 const $ = (id) => document.getElementById(id);
 const LOC_KEY = 'nowcast.location.v1';
@@ -27,6 +28,7 @@ const state = {
   lat: null, lon: null, name: '', units: loadUnits(), prefs: loadPrefs(),
   result: null, fmt: null, frameIdx: 0, framesMeta: [], playing: false, playTimer: null,
   runId: 0, running: false, lastRun: 0, lastOk: 0, failed: false, nhHover: null, alerted: '', source: '', mapMode: 'radar',
+  admin: null, alertsData: null,
 };
 
 function loadPrefs() {
@@ -195,7 +197,9 @@ function setLocation(lat, lon, { name = '', source = 'user', zoom } = {}) {
   radarMap.setPin(state.lat, state.lon);
   if (source !== 'map' && source !== 'drag') radarMap.setView(state.lat, state.lon, zoom || 8);
   renderLocation();
-  if (!name) reverseGeocode(state.lat, state.lon);
+  state.admin = null;
+  lookupPlace(state.lat, state.lon, !name);
+  refreshAlerts(false);
   refresh(true);
 }
 
@@ -209,21 +213,132 @@ function renderLocation() {
 }
 
 let geoTimer = null;
-function reverseGeocode(lat, lon) {
+const PLACE_KEY = 'nowcast.places.v1';
+function placeCache() {
+  try { return JSON.parse(localStorage.getItem(PLACE_KEY) || '{}') || {}; } catch { return {}; }
+}
+/** Name and administrative areas (mandal/taluk, district, state) of a point, cached per ~1 km. */
+function lookupPlace(lat, lon, needName) {
   clearTimeout(geoTimer);
+  const ck = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const hit = placeCache()[ck];
+  if (hit && hit.admin && Date.now() - hit.t < 30 * 86400000) { applyPlace(hit, lat, lon, needName); return; }
   geoTimer = setTimeout(async () => {
     try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=12&accept-language=${encodeURIComponent(navigator.language || 'en')}`;
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=12&accept-language=en`;
       const j = await (await fetch(url)).json();
-      if (state.lat !== lat || state.lon !== lon) return;
       const a = j.address || {};
       const place = a.city || a.town || a.village || a.suburb || a.hamlet || a.municipality || a.county || a.state_district || a.state || j.name;
       const region = a.state && a.state !== place ? a.state : a.country;
-      state.name = [place, region].filter(Boolean).join(', ') || '';
-      renderLocation();
-      try { localStorage.setItem(LOC_KEY, JSON.stringify({ lat: state.lat, lon: state.lon, name: state.name })); } catch { /* ignore */ }
+      const entry = {
+        t: Date.now(),
+        name: [place, region].filter(Boolean).join(', '),
+        admin: { state: a.state || '', district: a.state_district || '', sub: a.county || a.municipality || '', town: a.city || a.town || a.village || a.suburb || a.hamlet || '' },
+      };
+      try {
+        const all = placeCache();
+        all[ck] = entry;
+        const keys = Object.keys(all).sort((x, y) => all[x].t - all[y].t);
+        for (const k of keys.slice(0, Math.max(0, keys.length - 40))) delete all[k];
+        localStorage.setItem(PLACE_KEY, JSON.stringify(all));
+      } catch { /* ignore */ }
+      applyPlace(entry, lat, lon, needName);
     } catch { /* keep coordinates */ }
   }, 350);
+}
+function applyPlace(entry, lat, lon, needName) {
+  if (state.lat !== lat || state.lon !== lon) return;
+  state.admin = entry.admin;
+  if (needName && entry.name) {
+    state.name = entry.name;
+    renderLocation();
+    try { localStorage.setItem(LOC_KEY, JSON.stringify({ lat: state.lat, lon: state.lon, name: state.name })); } catch { /* ignore */ }
+  }
+  renderAlerts();
+}
+
+// ---------- official warnings (NDMA SACHET, through api/alerts.js) ----------
+let alertsAt = 0;
+async function refreshAlerts(force) {
+  if (!force && Date.now() - alertsAt < 170 * 1000) return;
+  alertsAt = Date.now();
+  try {
+    const r = await fetch('/api/alerts');
+    if (!r.ok) throw new Error(String(r.status));
+    const d = await r.json();
+    if (!Array.isArray(d.alerts)) throw new Error('no alerts list');
+    state.alertsData = d;
+  } catch {
+    if (!state.alertsData || state.alertsData.failed) state.alertsData = { failed: true, alerts: [] };
+  }
+  renderAlerts();
+}
+/** Warnings in force that cover this place, and others in the same state. Null when unknown. */
+function officialMatches() {
+  const d = state.alertsData;
+  if (!d || d.failed || !state.admin) return null;
+  const now = Date.now();
+  return matchAlerts(d.alerts.filter((a) => !a.expires || Date.parse(a.expires) > now), state.admin);
+}
+const alertClock = (iso) => {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  return state.fmt ? state.fmt.time(t / 1000) : new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+};
+function alertWhere(level, a) {
+  if (level === 'local') return areaLabel(a);
+  if (level === 'district') return `${(state.admin.district || 'your district').replace(/ District$/i, '')} district`;
+  return state.admin.state || 'your state';
+}
+function renderAlertsBox() {
+  const box = $('alerts');
+  const m = officialMatches();
+  if (!m) { box.hidden = true; box.innerHTML = ''; return m; }
+  let html = m.here.map(({ alert: a, level }) => `<article class="alert" data-sev="${esc(a.severity)}">
+      <div class="alert-top"><span>Official warning · ${esc(a.event || 'Weather')}${a.severity ? ` · ${esc(a.severity)}` : ''}</span><span class="until">${a.expires ? `until ${esc(alertClock(a.expires))}` : ''}</span></div>
+      <p class="alert-h">${esc(a.headline)}</p>
+      ${a.local && a.local.headline ? `<details class="alert-local"><summary>${esc(languageName(a.local.language) || 'Local language')}</summary>${esc(a.local.headline)}</details>` : ''}
+      <p class="alert-meta">${esc(issuerName(a.sender))} · ${esc(alertWhere(level, a))} · via NDMA SACHET</p>
+    </article>`).join('');
+  if (!m.here.length) {
+    const st = state.admin.state || 'your state';
+    html = m.state.length
+      ? `<details class="alerts-none"><summary>No official warnings for your area · ${m.state.length} elsewhere in ${esc(st)}</summary><ul>${m.state.slice(0, 15).map((a) => `<li>${esc(a.event || 'Warning')} · ${esc(areaLabel(a))}${a.expires ? ` · until ${esc(alertClock(a.expires))}` : ''}</li>`).join('')}</ul></details>`
+      : '<p class="alerts-none">No official warnings for your area right now (NDMA SACHET).</p>';
+  }
+  box.innerHTML = html;
+  box.hidden = false;
+  return m;
+}
+function renderAlerts() {
+  const m = renderAlertsBox();
+  if (state.result) {
+    safely('insight', () => renderInsight(state.result));
+    safely('statusbar', () => renderStatusBar(state.result));
+  }
+  notifyOfficial(m);
+}
+const NOTIFIED_KEY = 'nowcast.notified.v1';
+function notifyOfficial(m) {
+  if (!m || !m.here.length || state.prefs.alert !== 'on') return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem(NOTIFIED_KEY) || '[]'); } catch { /* ignore */ }
+  for (const { alert: a } of m.here) {
+    if (seen.includes(a.id)) continue;
+    seen.push(a.id);
+    const title = `${a.event || 'Weather'} warning`;
+    const body = `${a.headline}${a.expires ? ` Until ${alertClock(a.expires)}.` : ''} (${issuerName(a.sender)})`;
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready.then((reg) => reg.showNotification(title, { body, tag: `nowcast-official-${a.id}`, icon: 'icons/icon-192.png' }));
+      } else {
+        // eslint-disable-next-line no-new
+        new Notification(title, { body, tag: `nowcast-official-${a.id}` });
+      }
+    } catch { /* notifications unsupported */ }
+  }
+  try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify(seen.slice(-100))); } catch { /* ignore */ }
 }
 
 async function searchPlaces(q) {
@@ -349,6 +464,7 @@ function renderAll(resetFrame = false) {
   clockKey = '';
   safely('location', renderLocation);
   safely('summary', () => renderSummary(r));
+  safely('alerts', renderAlertsBox);
   safely('insight', () => renderInsight(r));
   safely('hours', () => renderHours(r));
   safely('about', () => renderAbout(r));
@@ -593,12 +709,25 @@ function renderInsight(r) {
   const at = (m) => f.time(r.nowSec + m * 60);
   const dir = (deg) => compass16(deg);
 
-  // prediction mode
-  const [modeName, texts] = MODE_TEXT[ins.mode.mode] || ['', {}];
+  // official warnings covering this place (lightning, thunderstorms, heavy rain, cyclone)
+  const off = officialMatches();
+  const offHere = off ? off.here : [];
+  const offWx = offHere.filter((h) => isStormAlert(h.alert) || isRainAlert(h.alert));
+  const offStorm = offHere.filter((h) => isStormAlert(h.alert));
+
+  // prediction mode: an official storm or rain warning means weather is expected here even when
+  // radar shows nothing heading this way yet
+  let modeKey = ins.mode.mode, modeText;
+  if (offWx.length && (modeKey === 'settled' || modeKey === 'models')) {
+    const a = offWx[0].alert;
+    modeKey = 'developing';
+    modeText = `An official ${(a.event || 'weather').toLowerCase()} warning covers your area (${issuerName(a.sender)}). Radar shows nothing heading here yet, but storms can start with little warning.`;
+  }
+  const [modeName, texts] = MODE_TEXT[modeKey] || ['', {}];
   $('mode').hidden = !modeName;
-  $('mode').dataset.mode = ins.mode.mode;
+  $('mode').dataset.mode = modeKey;
   $('mode-v').textContent = modeName;
-  $('mode-d').textContent = texts[ins.mode.why] || Object.values(texts)[0] || '';
+  $('mode-d').textContent = modeText || texts[ins.mode.why] || Object.values(texts)[0] || '';
 
   // why: headline chance + reasons, each tagged with its source
   const j = ins.journey;
@@ -614,6 +743,9 @@ function renderInsight(r) {
 
   const items = [];
   const add = (tone, html, tag) => items.push({ tone, html, tag });
+  for (const { alert: a, level } of offHere.slice(0, 2)) {
+    add('warn', `Official warning: <b>${esc(a.event || 'weather')}</b> for ${esc(alertWhere(level, a))}${a.expires ? ` until ${esc(alertClock(a.expires))}` : ''}`, 'Official');
+  }
   const rd = r.radar;
   if (!rd) add('warn', 'No usable radar picture right now', 'Radar');
   else if (s.rainingNow) add('yes', 'Rain is falling here now', 'Radar');
@@ -625,7 +757,8 @@ function renderInsight(r) {
     const word = t.label === 'strengthening' ? 'strengthening ↑' : t.label === 'weakening' ? 'weakening ↓' : 'steady';
     add(t.label === 'strengthening' ? 'warn' : 'yes', `Radar trend: <b>${word}</b> (${t.changePct > 0 ? '+' : ''}${t.changePct}% in ${t.minutes} min)`, 'Radar');
   }
-  if (rd && rd.motion.speedKmh > 3) {
+  const rainNear = s.rainingNow || j.state === 'approaching' || (ins.nearestNow && ins.nearestNow.distKm <= 150);
+  if (rd && rd.motion.speedKmh > 3 && rainNear) {
     if (rd.motion.vectors >= 3) add('yes', `Moving toward the <b>${dir(rd.motion.toDeg)}</b> at <b>${esc(f.speed(rd.motion.speedKmh))}</b>`, 'Radar');
     else if (rd.steer) add('no', `Too little rain to track; wind ~3 km up would carry it toward the ${dir((rd.steer.fromDeg + 180) % 360)} at ${esc(f.speed(rd.steer.speedKmh))}`, 'Models');
   }
@@ -672,8 +805,12 @@ function renderInsight(r) {
   $('why-src').textContent = `${nsrc} source${nsrc === 1 ? '' : 's'}`;
 
   // rain journey
-  $('journey').innerHTML = journeyHTML(j, f, r.nowSec);
-  $('journey-src').textContent = { approaching: 'Rain on its way', overhead: 'Raining now', developing: 'Storms may form', nearby: 'Rain nearby', clear: 'All clear', noradar: 'Models only' }[j.state] || '';
+  let jy = { ...j, checks: { ...j.checks, official: offWx.length ? true : null } };
+  if (offWx.length && (j.state === 'clear' || j.state === 'nearby')) {
+    jy = { ...jy, state: 'developing', where: null, official: offWx[0].alert.event || 'weather' };
+  }
+  $('journey').innerHTML = journeyHTML(jy, f, r.nowSec);
+  $('journey-src').textContent = jy.official ? 'Official warning' : ({ approaching: 'Rain on its way', overhead: 'Raining now', developing: 'Storms may form', nearby: 'Rain nearby', clear: 'All clear', noradar: 'Models only' }[jy.state] || '');
 
   // radar (IMD network)
   const rows = [];
@@ -712,12 +849,22 @@ function renderInsight(r) {
     const th = ins.thunder;
     kv('Thunderstorm potential', th.level, `CAPE ${th.cape.toLocaleString('en-IN')} J/kg · ${Math.round(th.share * 100)}% of models`, th.level === 'High' || th.level === 'Moderate' ? 'hot' : '');
   }
-  kv('Lightning', 'No open feed for India', `${linkOut(`https://map.blitzortung.org/#8/${r.lat.toFixed(2)}/${r.lon.toFixed(2)}`, 'Live map (Blitzortung)')}`);
+  const blitz = linkOut(`https://map.blitzortung.org/#8/${r.lat.toFixed(2)}/${r.lon.toFixed(2)}`, 'Live map (Blitzortung)');
+  if (offStorm.length) {
+    const a = offStorm[0].alert;
+    kv('Lightning', 'Official warning', `${esc(issuerName(a.sender))} · ${esc(a.severity || '')}${a.expires ? ` · until ${esc(alertClock(a.expires))}` : ''} · ${blitz}`, 'hot');
+  } else if (off) {
+    const n = off.state.filter(isStormAlert).length;
+    kv('Lightning', 'No warning for your area', `${n ? `${n} lightning or thunder warning${n === 1 ? '' : 's'} elsewhere in ${esc(state.admin.state)} · ` : ''}${blitz}`);
+  } else {
+    kv('Lightning', state.alertsData && state.alertsData.failed ? 'Warnings unavailable' : 'Checking warnings…', blitz, state.alertsData && state.alertsData.failed ? 'warn' : '');
+  }
   $('storm-kv').innerHTML = rows.join('');
-  const devLabel = sat && sat.ok ? (ins.satVerdict === 'storm' ? 'Developing' : ins.satVerdict === 'high-cloud' ? 'Quiet' : { rapid: 'Developing', developing: 'Developing', steady: 'Quiet', decaying: 'Easing', clear: 'Quiet' }[sat.trend]) : '—';
+  let devLabel = sat && sat.ok ? (ins.satVerdict === 'storm' ? 'Developing' : ins.satVerdict === 'high-cloud' ? 'Quiet' : { rapid: 'Developing', developing: 'Developing', steady: 'Quiet', decaying: 'Easing', clear: 'Quiet' }[sat.trend]) : '—';
+  if (offStorm.length) devLabel = 'Warning';
   $('sw-chip').textContent = devLabel;
-  $('sw-chip').dataset.level = devLabel === 'Developing' ? 'low' : devLabel === 'Quiet' || devLabel === 'Easing' ? 'high' : 'none';
-  $('storm-note').textContent = 'Satellite: Meteosat-9 (EUMETSAT) infrared, about 30 minutes behind real time; cloud tops that cool fast mark storms forming before radar sees rain. Lightning: Blitzortung is a volunteer network, not for safety decisions.';
+  $('sw-chip').dataset.level = devLabel === 'Developing' || devLabel === 'Warning' ? 'low' : devLabel === 'Quiet' || devLabel === 'Easing' ? 'high' : 'none';
+  $('storm-note').textContent = 'Lightning and thunderstorm warnings: official alerts from IMD and state disaster authorities through NDMA SACHET, matched to your mandal and district. Satellite: Meteosat-9 (EUMETSAT) infrared, about 30 minutes behind real time; cloud tops that cool fast mark storms forming before radar sees rain. Blitzortung is a volunteer network, not for safety decisions.';
 }
 
 /** Bottom status line: where every input stands right now. */
@@ -745,6 +892,8 @@ function renderStatusBar(r) {
   if (ai && ai.used) items.push(`AI <b class="ok">on</b> · ${Math.round(ai.trust60 * 100)}% at 1 h`);
   else if (st.status === 'collecting') items.push('AI <b>learning</b>');
   else if (st.model) items.push('AI <b>standby</b>');
+  const offSb = officialMatches();
+  if (offSb && offSb.here.length) items.push(`Warnings <b class="warn">${offSb.here.length}</b>`);
   items.push(`Updated <b>${f.time(r.nowSec)}</b>`);
   $('sb-data').innerHTML = items.map((x) => `<span>${x}</span>`).join('');
 }
@@ -1093,8 +1242,8 @@ function bindUI() {
     const h = parseHash();
     if (h && (h.lat !== state.lat || h.lon !== state.lon)) setLocation(h.lat, h.lon, { source: 'link' });
   });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(false); });
-  setInterval(() => { if (document.visibilityState === 'visible') refresh(false); }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { refresh(false); refreshAlerts(false); } });
+  setInterval(() => { if (document.visibilityState === 'visible') { refresh(false); refreshAlerts(false); } }, 60 * 1000);
   setInterval(() => { if (document.visibilityState === 'visible') tickClock(); }, 1000);
 }
 

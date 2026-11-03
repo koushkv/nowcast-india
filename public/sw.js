@@ -1,10 +1,10 @@
 // Offline app shell. Live data (radar, models, map tiles) always goes to the network.
-const CACHE = 'nowcast-v8';
+const CACHE = 'nowcast-v9';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest',
   'js/app.js', 'js/engine.js', 'js/radar.js', 'js/png.js', 'js/motion.js', 'js/nowcast.js',
   'js/nwp.js', 'js/blend.js', 'js/util.js', 'js/format.js', 'js/charts.js', 'js/map.js', 'js/worker.js', 'js/scorecard.js', 'js/ai.js',
-  'js/stations.js', 'js/satellite.js', 'js/insight.js', 'js/journey.js',
+  'js/stations.js', 'js/satellite.js', 'js/insight.js', 'js/journey.js', 'js/alerts.js',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css',
   'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/geist-latin.woff2', 'fonts/geist-mono-latin.woff2',

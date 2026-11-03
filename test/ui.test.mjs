@@ -33,6 +33,17 @@ const server = http.createServer(async (req, res) => {
     res.end(await r.text());
     return;
   }
+  if (reqUrl.pathname === '/api/alerts') {
+    // emulate api/alerts.js: a lightning warning for Puttaparthi mandal and one elsewhere in the state
+    const exp = new Date(Date.now() + 2 * 3600e3).toISOString();
+    const base = { status: 'Actual', msgType: 'Alert', refs: [], urgency: 'Expected', certainty: 'Possible', sender: 'Andhra-Pradesh-SDMA', event: 'Lightning', severity: 'Severe', expires: exp, sent: new Date().toISOString() };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ updated: new Date().toISOString(), complete: true, alerts: [
+      { ...base, id: '1', capId: 'IN-1_8', area: 'sss-Puttaparthi Mandal', headline: 'There is a possibility of lightning in your area. Seek shelter in safe buildings - Andhra Pradesh Government.', local: { language: 'TL', headline: 'మీ ప్రాంతంలో పిడుగులు పడే అవకాశం ఉంది.' } },
+      { ...base, id: '2', capId: 'IN-2_8', area: 'ksm-katrenikona Mandal', headline: 'There is a possibility of lightning in your area.' },
+    ] }));
+    return;
+  }
   if (reqUrl.pathname === '/api/sat') {
     // emulate api/sat.js: cloud tops near -30 °C over the rain to the west-southwest, clear elsewhere
     const full = `http://site${req.url}`;
@@ -99,7 +110,7 @@ async function route(page, opts = {}) {
     if (u.startsWith('https://tile.openstreetmap.org/')) {
       return rt.fulfill({ status: 200, headers: { 'content-type': 'image/png' }, body: grey });
     }
-    if (u.startsWith('https://nominatim.openstreetmap.org/')) return rt.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify({ address: { town: 'Puttaparthi', state: 'Andhra Pradesh', country: 'India' } }) });
+    if (u.startsWith('https://nominatim.openstreetmap.org/')) return rt.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify({ address: { town: 'Puttaparthi', county: 'Puttaparthi Mandal', state_district: 'Sri Sathya Sai District', state: 'Andhra Pradesh', country: 'India' } }) });
     return rt.abort();
   });
 }
@@ -144,6 +155,7 @@ for (const cfg of [
     return t && !t.startsWith('Checking') && document.getElementById('status').dataset.state !== 'loading';
   }, null, { timeout: 60000 });
   const ms = Date.now() - t0;
+  await page.waitForFunction(() => !document.getElementById('alerts').hidden, null, { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(400);
   const info = await page.evaluate(() => ({
     title: document.getElementById('title').textContent,
@@ -168,6 +180,7 @@ for (const cfg of [
     radarKv: document.getElementById('radar-kv').textContent,
     storm: document.getElementById('storm-kv').textContent,
     groups: [...document.querySelectorAll('#hours tr.grp')].map((g) => g.textContent).join(' | '),
+    alerts: document.getElementById('alerts').hidden ? 'hidden' : document.getElementById('alerts').textContent.replace(/\s+/g, ' ').trim(),
     facts: document.querySelectorAll('#facts dt').length,
     track: document.getElementById('sc-summary').textContent,
     trackStats: document.getElementById('sc-stats').hidden ? 'hidden' : [document.getElementById('sc-acc').textContent, document.getElementById('sc-sr').textContent, document.getElementById('sc-pod').textContent].join(' / '),
@@ -207,6 +220,10 @@ for (const cfg of [
   if (!/Sriharikota/.test(info.radarKv)) errors.push('nearest IMD radar missing');
   if (!/Cloud development/.test(info.storm) || /Unavailable/.test(info.storm)) errors.push(`storm watch: "${info.storm.slice(0, 80)}"`);
   if ((info.groups.match(/→/g) || []).length < 5) errors.push(`confidence groups: "${info.groups}"`);
+  if (!/Official warning · Lightning · Severe/.test(info.alerts) || /katrenikona/i.test(info.alerts)) errors.push(`official warning banner: "${info.alerts.slice(0, 120)}"`);
+  if (!/Lightning\s*Official warning/.test(info.storm)) errors.push(`lightning row: "${info.storm.slice(0, 160)}"`);
+  if (!/Official warning: Lightning for Puttaparthi mandal/.test(info.why)) errors.push('official warning missing from "Why"');
+  if (!/°C/.test(info.temp)) errors.push(`not metric by default: "${info.temp}"`);
   results.push({ cfg: cfg.name, ms, info, errors });
   await ctx.close();
 }

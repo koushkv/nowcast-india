@@ -54,5 +54,10 @@
         }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/alerts.js": {
+      "maxDuration": 30
+    }
+  }
 }

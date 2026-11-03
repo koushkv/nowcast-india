@@ -95,6 +95,8 @@ function scopeView(j, f, sat) {
       const [x, y] = at(Math.max(4, j.where.distKm), j.where.bearing);
       body += cloud(x, y, 0.55, 'var(--alert)', ' class="pulse"');
       label = `Cloud tops climbing ${f.dist(j.where.distKm)} ${compass16(j.where.bearing)}`;
+    } else if (j.official) {
+      label = `Official ${String(j.official).toLowerCase()} warning for your area`;
     } else {
       label = 'Showers may form within ~40 km';
     }
@@ -116,7 +118,7 @@ function scopeView(j, f, sat) {
   </svg>`;
 }
 
-const CHECK_LABEL = { radar: 'Radar track', satellite: 'Satellite', models: 'Models', ai: 'AI' };
+const CHECK_LABEL = { official: 'Official warning', radar: 'Radar track', satellite: 'Satellite', models: 'Models', ai: 'AI' };
 
 /** Full card body: diagram, the headline numbers under it, and which sources agree. */
 export function journeyHTML(j, f, nowSec) {
@@ -153,7 +155,7 @@ export function journeyHTML(j, f, nowSec) {
   // of ✓/✗ would read as "something is wrong" rather than "nothing is coming".
   let checksHTML = '';
   if (j.state === 'approaching' || j.state === 'overhead' || j.state === 'developing') {
-    const checks = Object.entries(CHECK_LABEL).map(([k, label]) => {
+    const checks = Object.entries(CHECK_LABEL).filter(([k]) => k !== 'official' || (j.checks && j.checks.official)).map(([k, label]) => {
       const v = j.checks ? j.checks[k] : null;
       const name = k === 'radar' && v == null && j.state === 'developing' ? 'Radar: nothing to track yet' : label;
       const cls = v === true ? 'yes' : v === false ? 'no' : 'na';

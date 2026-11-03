@@ -56,7 +56,7 @@ try {
   });
   assert.ok(!('nowcast-v5' in names), 'old app-shell cache removed');
   assert.deepEqual(names['nowcast-data-v1'], ['/keep'], 'forecast data cache kept');
-  const shell = names['nowcast-v8'] || [];
+  const shell = names['nowcast-v9'] || [];
   assert.ok(shell.includes('/index.html') && shell.includes('/js/ai.js'), 'app shell cached');
   assert.ok(!shell.some((p) => p.startsWith('/api/') || p.startsWith('/ai/')), `no live data in the shell cache: ${shell.filter((p) => /^\/(api|ai)\//.test(p))}`);
   console.log(`  ok  shell cached (${shell.length} files), relays and AI files not stored, data cache kept, old cache removed`);

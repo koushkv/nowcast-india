@@ -8,11 +8,8 @@ export function loadUnits() {
     const raw = localStorage.getItem(KEY);
     if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch { /* storage unavailable */ }
-  // sensible default for US users
-  try {
-    const loc = (navigator.language || '').toLowerCase();
-    if (loc === 'en-us' || loc.endsWith('-lr') || loc.endsWith('-mm')) return { ...DEFAULTS, temp: 'F', wind: 'mph', rain: 'in', dist: 'mi', clock: '12' };
-  } catch { /* ignore */ }
+  // India: metric for everyone, whatever the browser's language (many Indian phones are set to
+  // "English (US)"). People can still choose other units in Settings.
   return { ...DEFAULTS };
 }
 export function saveUnits(u) {

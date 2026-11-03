@@ -13,16 +13,18 @@ A minute-level rain forecast for the next 5 hours, anywhere in India. It combine
   - a **rain journey** diagram (where the rain is now, how fast it moves, when it reaches you, and which sources agree);
   - confidence for each hour of the next five, falling with time.
 - **IMD radar network.** The nearest IMD Doppler radars, their distance and how high their beam passes over the location, combined into a radar confidence, with links to IMD's own images.
+- **Official warnings.** Lightning, thunderstorm, heavy-rain and cyclone warnings from IMD and the state disaster authorities, through NDMA's SACHET portal (the system behind the government's phone alerts). Each warning is matched to the location's mandal/taluk and district, shown at the top of the forecast with its expiry time and its original-language text, and sent as a notification when alerts are on.
 - **Storm watch.** Meteosat-9 infrared (EUMETSAT) every 15 minutes: cloud tops that cool fast mark storms forming before radar sees rain. When that happens close by, with unstable air and nothing on radar, the near-term rain chance is raised.
 
-The site is static (`public/`) plus three small relay functions (`api/`) on Vercel. The forecast and the AI run on the visitor's device, in a background thread.
+The site is static (`public/`) plus four small relay functions (`api/`) on Vercel. The forecast and the AI run on the visitor's device, in a background thread.
 
 ### Data notes
 
 - **Radar** is IMD's Doppler radar network, through RainViewer's composite. IMD publishes its radars only as images, and its data feeds need an approved account, so the site links to IMD's images rather than reading them.
 - **Radar confidence** takes the weakest of coverage, image age and beam height. Puttaparthi is ~265 km from the nearest radar (Sriharikota), where the lowest beam passes ~6.5 km up and can miss shallow rain, so radar confidence there is low and the models get more weight.
 - **Satellite** temperatures come from EUMETSAT's rendered infrared images (a grey scale), so absolute cloud-top temperatures are approximate (about ±5 °C). Changes between images, which is what detects growing storms, are much more precise.
-- **Lightning:** there is no open real-time lightning feed for India. The site shows thunderstorm potential from the models and links to Blitzortung's live map (a volunteer network, not for safety decisions).
+- **Lightning:** there is no open feed of lightning strikes for India, but official lightning and thunderstorm *warnings* are public: Andhra Pradesh's disaster authority, for example, issues mandal-level lightning warnings for the next three hours. The site shows those, the models' thunderstorm potential, and a link to Blitzortung's live strike map (a volunteer network, not for safety decisions).
+- **Warnings** come from SACHET's all-India feed (public domain) through `api/alerts.js`, which polls politely as NDMA's integration guide asks (ETag on the feed, each alert file fetched once) and is cached for 3 minutes for everyone. Warnings are matched to places by name; SACHET's exact warning-area maps are not publicly downloadable.
 
 ## How the forecast is made
 
@@ -77,7 +79,7 @@ python3 -m http.server 8080 --directory public
 ```
 
 ```bash
-node test/engine.test.mjs && node test/full.test.mjs && node test/insight.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs
+node test/engine.test.mjs && node test/full.test.mjs && node test/insight.test.mjs && node test/alerts.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs
 ```
 
 ```bash
@@ -111,11 +113,13 @@ public/                  the website (deployed by Vercel)
   js/stations.js         IMD radar network, beam height, radar confidence
   js/satellite.js        Meteosat infrared: cloud-top cooling and cold tops near the location
   js/journey.js          the rain journey diagram (SVG)
+  js/alerts.js           official warnings matched to the location (mandal, district)
   js/map.js, charts.js   map (smooth radar and chance-of-rain heatmap), next-hour chart
   js/worker.js           runs everything off the main thread, caching
   ai/                    model.json, model.bin, metrics.json (written by the nightly training)
 api/om.js, api/rv.js     caching relays for Open-Meteo and RainViewer
 api/sat.js               relay for Meteosat-9 infrared images (EUMETSAT WMS)
+api/alerts.js            relay for official warnings (NDMA SACHET, Common Alerting Protocol)
 backend/                 collector, model, trainer (Python)
 .github/workflows/       collection every 30 min, nightly training
 test/                    JavaScript and Python tests (synthetic storms with known answers)

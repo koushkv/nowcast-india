@@ -74,14 +74,15 @@
   <div class="setting"><span>Rain</span><div class="seg" data-unit="rain"><button type="button" data-v="mm">mm</button><button type="button" data-v="in">in</button></div></div>
   <div class="setting"><span>Distance</span><div class="seg" data-unit="dist"><button type="button" data-v="km">km</button><button type="button" data-v="mi">mi</button></div></div>
   <div class="setting"><span>Clock</span><div class="seg" data-unit="clock"><button type="button" data-v="24">24 h</button><button type="button" data-v="12">12 h</button></div></div>
-  <div class="setting"><span>Rain alert</span><div class="seg" data-unit="alert"><button type="button" data-v="off">Off</button><button type="button" data-v="on">On</button></div></div>
-  <p class="hint">With the rain alert on, you get a notification when rain is likely within 20 minutes, while this page is open or installed on your home screen.</p>
+  <div class="setting"><span>Alerts</span><div class="seg" data-unit="alert"><button type="button" data-v="off">Off</button><button type="button" data-v="on">On</button></div></div>
+  <p class="hint">With alerts on, you get a notification when rain is likely within 20 minutes and when an official warning (IMD, state disaster authority) covers your area, while this page is open or installed on your home screen.</p>
   <div class="pop-foot"><button class="btn" type="button" id="settings-close">Done</button></div>
 </div>
 
 <main class="console">
   <section class="panel now" id="readout" aria-labelledby="title" tabindex="-1">
     <div class="head"><h2>Forecast</h2><span id="confidence" class="chip"></span></div>
+    <div class="alerts" id="alerts" role="region" aria-label="Official warnings" aria-live="polite" hidden></div>
     <div class="lead">
       <p id="status" class="status" data-state="loading"><i class="dot" aria-hidden="true"></i><span id="status-text">Updating</span></p>
       <h1 id="title" aria-live="polite">Checking the radar…</h1>
@@ -221,7 +222,8 @@
     <a href="https://open-meteo.com" rel="noopener" target="_blank">Open-Meteo</a>
     <a href="https://view.eumetsat.int" rel="noopener" target="_blank">EUMETSAT</a>
     <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">© OpenStreetMap</a>
-    <a href="https://mausam.imd.gov.in" rel="noopener" target="_blank">IMD warnings</a>
+    <a href="https://sachet.ndma.gov.in" rel="noopener" target="_blank">NDMA SACHET</a>
+    <a href="https://mausam.imd.gov.in" rel="noopener" target="_blank">IMD</a>
   </div>
 </footer>
 

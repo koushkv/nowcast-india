@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Minute-level rain forecast for the next 5 hours anywhere in India: radar nowcasting, an AI model trained on Indian radar, and weather models",
   "scripts": {
-    "test": "node test/engine.test.mjs && node test/full.test.mjs && node test/insight.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs",
+    "test": "node test/engine.test.mjs && node test/full.test.mjs && node test/insight.test.mjs && node test/alerts.test.mjs && node test/scorecard.test.mjs && node test/relay.test.mjs",
     "test:ui": "node test/ui.test.mjs && node test/sw.test.mjs",
     "test:ai": "python3 test/py/test_collect.py && python3 test/py/test_train.py && node test/ai.test.mjs",
     "serve": "python3 -m http.server 8080 --directory public",
